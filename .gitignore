@@ -1,0 +1,29 @@
+# Build artifacts
+obj/
+*.o
+*.d
+*.lst
+*.map
+*.elf
+*.bin
+*.hex
+*.su
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# MounRiver Studio temp / metadata
+.metadata/
+.settings/
+*.launch
+
+# Logs
+*.log

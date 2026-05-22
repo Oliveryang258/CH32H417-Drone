@@ -1,0 +1,27 @@
+{
+	"folders": [
+		{
+			"name": ".mrs",
+			"path": "."
+		},
+		{
+			"name": "V5F",
+			"path": "../../../GPIO/GPIO_Toggle/V5F"
+		}
+	],
+	"settings": {
+		"mrs.workspace.type": "project",
+		"files.associations": {
+			"*.c": "c",
+			"*.h": "cpp",
+			"*.hxx": "cpp",
+			"*.hpp": "cpp",
+			"*.c++": "cpp",
+			"*.cpp": "cpp",
+			"*.cxx": "cpp",
+			"*.cc": "cpp",
+			"*.hh": "cpp",
+			"*.h++": "cpp"
+		}
+	}
+}

@@ -1,0 +1,69 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "mrs-debugger",
+			"request": "launch",
+			"name": "GPIO_Toggle_V5F",
+			"cwd": "c:\\Users\\32142\\Desktop\\EVT\\EXAM\\GPIO\\GPIO_Toggle\\V5F",
+			"openOCDCfg": {
+				"useLocalOpenOCD": true,
+				"executable": "d:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/OpenOCD/OpenOCD/bin/openocd.exe",
+				"configOptions": [
+					"-f \"d:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/OpenOCD/OpenOCD/bin/wch-dual-core.cfg\" -c \"chip_id CH32H417V5F\" -c page_erase"
+				],
+				"gdbport": 3334,
+				"telnetport": 4444,
+				"tclport": 6666,
+				"host": "localhost",
+				"port": 3333,
+				"skipDownloadBeforeDebug": false,
+				"enablePageEraser": true,
+				"enableNoZeroWaitingAreaFlash": false
+			},
+			"gdbCfg": {
+				"executable": "d:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC12/bin/riscv-wch-elf-gdb.exe",
+				"commands": [
+					"set mem inaccessible-by-default off",
+					"set architecture riscv:rv32",
+					"set remotetimeout unlimited",
+					"set disassembler-options xw",
+					"set breakpoint always-inserted on"
+				],
+				"options": []
+			},
+			"startup": {
+				"initCommands": {
+					"initReset": true,
+					"initResetType": "init",
+					"armSemihosting": false,
+					"additionalCommands": []
+				},
+				"loadedFiles": {
+					"executableFile": "c:\\Users\\32142\\Desktop\\EVT\\EXAM\\GPIO\\GPIO_Toggle\\V5F\\obj\\GPIO_Toggle_V5F.elf",
+					"symbolFile": "c:\\Users\\32142\\Desktop\\EVT\\EXAM\\GPIO\\GPIO_Toggle\\V5F\\obj\\GPIO_Toggle_V5F.elf",
+					"executableFileOffset": 0,
+					"symbolFileOffset": 0
+				},
+				"runCommands": {
+					"runReset": true,
+					"runResetType": "halt",
+					"additionalCommands": [],
+					"setBreakAt": "handle_reset",
+					"continue": true,
+					"setProgramCounterAt": 0
+				},
+				"debugInRAM": false
+			},
+			"svdpath": "d:\\MounRiver\\MounRiver_Studio2\\resources\\app\\resources\\win32\\components\\WCH\\SDK\\default/RISC-V/CH32H417/NoneOS/CH32H417xx.svd",
+			"output": {
+				"showDebugGDBTrace": true,
+				"saveDebugOutputToFile": false,
+				"showDebugOutputTimestamps": true
+			},
+			"isDualCoreDebug": false,
+			"dualCoreDebugRole": null,
+			"architecture": "RISC-V"
+		}
+	]
+}

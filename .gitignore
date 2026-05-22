@@ -8,6 +8,27 @@ obj/
 *.bin
 *.hex
 *.su
+*.ko
+*.obj
+*.ilk
+*.exp
+*.gch
+*.pch
+*.lib
+*.a
+*.la
+*.lo
+*.dll
+*.so
+*.so.*
+*.dylib
+*.exe
+*.out
+*.app
+*.dSYM/
+*.idb
+*.pdb
+*.dwo
 
 # IDE / editor
 .vscode/

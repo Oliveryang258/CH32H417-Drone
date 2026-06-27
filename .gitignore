@@ -45,6 +45,12 @@ Thumbs.db
 .metadata/
 .settings/
 *.launch
+.mrs/
+*.mrs-workspace
+*.snapshot
+
+# Kiro / Claude CLI
+.claude/
 
 # Logs
 *.log

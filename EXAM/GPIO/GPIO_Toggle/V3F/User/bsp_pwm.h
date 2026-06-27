@@ -5,15 +5,22 @@
 
 /*
  * PWM 四路电机输出模块说明：
- * 1. 本模块恢复为与板级定义一致的 4 路 PWM 输出版本。
- * 2. 当前目标引脚来自 board_config.h：
+ * 1. 本模块对应 4 路 TIM4 PWM 输出，引脚来自 board_config.h：
  *    - PWM_MOTOR1 -> PD12 -> TIM4_CH1
  *    - PWM_MOTOR2 -> PD13 -> TIM4_CH2
  *    - PWM_MOTOR3 -> PD14 -> TIM4_CH3
  *    - PWM_MOTOR4 -> PD15 -> TIM4_CH4
- * 3. 输出频率固定为 50Hz，即周期 20ms。
- * 4. 脉宽单位统一为 us（微秒）。
- * 5. 当前版本仅保留和“四路 TIM4 输出”一致的语义，不再混用 PC6/TIM8 单路验证链。
+ *
+ * 2. 协议说明（标准 PWM 伺服协议）：
+ *    电调只关心【高电平脉宽】，而不是占空比：
+ *      高电平 1000us = 最低油门（停转）
+ *      高电平 2000us = 最高油门（满转）
+ *    周期内剩余时间为低电平，电调不关心其长短。
+ *
+ * 3. 输出频率：200Hz（周期 5000us）
+ *    逐飞电调固件支持 50~300Hz，200Hz 为推荐值（响应快，兼容性好）。
+ *
+ * 4. 脉宽单位统一为 us（微秒），TIM4 计数时钟 1MHz，CCR = 脉宽 us。
  */
 
 /* 逻辑通道数量固定为 4 路。 */
@@ -21,23 +28,19 @@
 
 /*
  * PWM 基本参数：
- * - PWM_PERIOD_US = 20000us，对应 50Hz
- * - PWM_MIN_PULSE_US = 1100us，对应 5.5%
- * - PWM_MAX_PULSE_US = 2000us，对应 10.0%
+ * - PWM_PERIOD_US = 5000us，对应 200Hz（逐飞电调固件支持 50~300Hz，200Hz 推荐）
+ * - PWM_MIN_PULSE_US = 1000us，高电平 1ms = 最低油门（停转）
+ * - PWM_MAX_PULSE_US = 2000us，高电平 2ms = 最高油门（满转）
  *
- * 注意：当前最小值不是 1000us，而是 1100us。
+ * 注意：电调只关心高电平脉宽，与周期长短无关。
+ *       TIM4 计数时钟 1MHz，CCR 值直接等于脉宽微秒数。
  */
-#define PWM_PERIOD_US                20000U
-#define PWM_MIN_PULSE_US             1100U
+#define PWM_PERIOD_US                5000U
+#define PWM_MIN_PULSE_US             1000U
 #define PWM_MAX_PULSE_US             2000U
 
-/*
- * 当前 50Hz 下占空比与脉宽的关系：
- * - 1100us = 1100 / 20000 = 5.5%
- * - 1200us = 6.0%
- * - 1500us = 7.5%
- * - 2000us = 10.0%
- */
+/* 电调解锁时强制输出最低油门并阻塞的时间（ms）。 */
+#define PWM_ARM_DELAY_MS             3000U
 
 /* 默认测试参数。 */
 #define PWM_TEST_PULSE_US            1100U

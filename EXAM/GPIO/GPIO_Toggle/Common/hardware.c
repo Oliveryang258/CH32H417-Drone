@@ -24,7 +24,7 @@ void Hardware(void)
     PWM_Arm();
 
     /* 直接写 CCR2，绕过 clamp，PD13 输出 50% 占空比 */
-    TIM_SetCompare2(TIM4, 10000);
+    TIM_SetCompare2(TIM4, 2000);
     printf("[PWM] PD13 50%% duty (10000/20000us)\r\n");
 
     while(1)

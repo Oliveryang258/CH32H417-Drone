@@ -20,6 +20,9 @@
  */
 #define PWM_TIM_COUNTER_CLK_HZ        1000000UL
 
+/* 电调解锁：上电后输出 1000us 低油门并阻塞等待的毫秒数。 */
+#define PWM_ARM_WAIT_MS               3000U
+
 /* 默认测试序列开始前等待 1000ms。 */
 #define PWM_TEST_SETTLE_DELAY_MS      1000U
 

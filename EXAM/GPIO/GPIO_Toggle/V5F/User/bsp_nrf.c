@@ -984,3 +984,39 @@ void NRF_Clear_RX_DR(void)
 {
     NRF_WriteReg(NRF_REG_STATUS, NRF_STATUS_RX_DR);
 }
+
+/*
+ * 启用 ACK Payload（PRX 端用）
+ * - FEATURE.EN_DPL=1, EN_ACK_PAY=1, EN_DYN_ACK=1
+ * - DYNPD pipe0/pipe1 启用动态载荷
+ * 必须在 NRF_Config(...) 之后调用，调用之后再 NRF_SetMode_RX()。
+ * NRF24L01+ 才支持。
+ */
+void NRF_EnableAckPayload(void)
+{
+    NRF_WriteReg(NRF_REG_FEATURE, 0x06);  /* EN_ACK_PAY=0x02, EN_DPL=0x04 */
+    NRF_WriteReg(NRF_REG_DYNPD, 0x03);    /* pipe0、pipe1 启用动态载荷 */
+}
+
+/*
+ * 把 ACK Payload 数据预填到 NRF 内部 TX FIFO（PRX 端用）。
+ * 每次只缓存一帧，下一次收到 PTX 包时随 ACK 自动回送。
+ *
+ * @param  pipe - 0~5
+ * @param  buf  - 数据缓冲区
+ * @param  len  - 1~32 字节
+ */
+void NRF_WriteAckPayload(uint8_t pipe, const uint8_t *buf, uint8_t len)
+{
+    uint8_t cmd = (uint8_t)(NRF_CMD_W_ACK_PAYLOAD | (pipe & 0x07U));
+    uint8_t i;
+
+    if ((buf == 0) || (len == 0U) || (len > 32U)) return;
+
+    NRF_CSN_LOW();
+    (void)SPI3_SwapByte(cmd);
+    for (i = 0U; i < len; i++) {
+        (void)SPI3_SwapByte(buf[i]);
+    }
+    NRF_CSN_HIGH();
+}

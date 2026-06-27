@@ -254,6 +254,22 @@ void NRF_Clear_MAX_RT(void);
 void NRF_Clear_RX_DR(void);
 
 /**
+ * @brief  启用 ACK Payload (PRX 端使用)
+ *         配置 FEATURE.EN_DPL=1 / EN_ACK_PAY=1，DYNPD pipe0/1 启用动态载荷。
+ *         必须在 NRF_Config 之后、NRF_SetMode_RX 之前调用。仅 NRF24L01+ 支持。
+ */
+void NRF_EnableAckPayload(void);
+
+/**
+ * @brief  预填一帧 ACK Payload 到 NRF 内部 TX FIFO。
+ *         下一次 PRX 收到对端包时随 ACK 自动回送。
+ * @param  pipe - 接收 pipe 编号 (0~5)
+ * @param  buf  - 载荷数据
+ * @param  len  - 字节数 1~32
+ */
+void NRF_WriteAckPayload(uint8_t pipe, const uint8_t *buf, uint8_t len);
+
+/**
  * @brief  写寄存器（通用接口）。
  *
  * @param  reg   - 寄存器地址

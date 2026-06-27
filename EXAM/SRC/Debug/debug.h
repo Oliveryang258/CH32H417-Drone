@@ -33,7 +33,13 @@
 #define DEBUG   DEBUG_UART8
 
 #elif defined(Core_V5F)
-#define DEBUG   DEBUG_UART3  // 使用GPS串口(PA13/PA14)作为调试输出
+/*
+ * V5F printf 已禁用（值 0xFF 不匹配任何 DEBUG_UARTx，让 printf 编译成空）。
+ * 原因：V5F 之前用 USART3 (PA13/PA14)，与 V3F 上的 VOFA+ HC-06 同一个物理引脚，
+ * 双核同时往同一个外设写数据会冲突，导致 VOFA 收到 ASCII 与二进制混合的乱码流。
+ * V5F 的所有外设状态可通过共享内存反映给 V3F 后再 VOFA 输出。
+ */
+#define DEBUG   0xFF
 
 #endif
 

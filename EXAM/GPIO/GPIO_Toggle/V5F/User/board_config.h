@@ -73,4 +73,8 @@
 #define TOF_RX                 GPIO_Pin_0                 
 #endif /* __BOARD_CONFIG_H */
 
+// 板间通讯
+#define CHIP_UART_PORT          GPIOA
+#define CHIP_TX_PIN             GPIO_Pin_9
+#define CHIP_RX_PIN             GPIO_Pin_10
 

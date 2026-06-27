@@ -10,7 +10,7 @@
 #define IMU_USART_IRQn            USART4_IRQn
 #define IMU_USART_CLK             RCC_HB1Periph_USART4
 #define IMU_USART_AF              GPIO_AF7
-#define IMU_USART_BAUDRATE        9600U     /* JY61P 出厂默认 9600；若你已用上位机改过，再相应改这里 */
+#define IMU_USART_BAUDRATE        9600U     /* JY61P 出厂默认 9600 */
 
 #define IMU_BOARD_TX_PIN          GPIO_Pin_6         /* PC6 -> USART4_TX  (MCU 发，连 IMU 模块 RX) */
 #define IMU_BOARD_RX_PIN          GPIO_Pin_7         /* PC7 -> USART4_RX  (MCU 收，连 IMU 模块 TX) */

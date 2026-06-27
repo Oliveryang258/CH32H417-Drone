@@ -29,10 +29,12 @@
 #define GPS_RX_PIN             GPIO_Pin_13 
 #define GPS_TX_PIN             GPIO_Pin_14 
 
-// CAM PA9, PA10
-#define CAM_UART_PORT          GPIOA
-#define CAM_RX_PIN             GPIO_Pin_9  
-#define CAM_TX_PIN             GPIO_Pin_10 
+#define VOFA_UART_PORT          GPIOA
+#define VOFA_TX_PIN             GPIO_Pin_13   /* PA13 -> USART3_TX (AF4) */
+#define VOFA_RX_PIN             GPIO_Pin_14   /* PA14 -> USART3_RX (AF4) */
+#define VOFA_TX_PINSOURCE       GPIO_PinSource13
+#define VOFA_RX_PINSOURCE       GPIO_PinSource14
+#define VOFA_GPIO_AF            GPIO_AF4
 
 // NRF SPI PC10=SCK, PC11=MISO, PC12=MOSI
 #define NRF_SPI_PORT           GPIOC
@@ -52,12 +54,18 @@
 #define ADC_CUR_PIN            GPIO_Pin_1  
 
 // BUZZER PD3
-#define BUZZ_PORT              GPIOD
-#define BUZZ_PIN               GPIO_Pin_3
+#define BUZZ_PORT              GPIOE
+#define BUZZ_PIN               GPIO_Pin_10
 
 // LED PE3
 #define LED_PORT               GPIOE
-#define LED_PIN                GPIO_Pin_3
+#define LED_PIN                GPIO_Pin_11
+
+// COMM USART1 主副核通信：PA9=TX, PA10=RX (AF7)
+// 注意：PA9/PA10 与 CAM 复用，使用时二者不可同时启用
+#define COMM_UART_PORT         GPIOA
+#define COMM_TX_PIN            GPIO_Pin_9   /* MCU TX -> 副芯片 RX */
+#define COMM_RX_PIN            GPIO_Pin_10  /* MCU RX <- 副芯片 TX */
 
 
 #endif /* __BOARD_CONFIG_H */

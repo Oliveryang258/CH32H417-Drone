@@ -20,10 +20,9 @@
 #include "debug.h"
 #include "hardware.h"
 #include "bsp.h"
+#include "shared_data.h"
 
 #define BRINGUP_PRINT_PERIOD_MS   1000U
-#define BRINGUP_LINK_TX_PERIOD_MS  100U     /* 10Hz：连续 RF 发射给 NRF/对端 LDO 留更多余量；20Hz 实测会卡 ACK */
-#define BRINGUP_LINK_TX_TIMEOUT_MS  15U     /* ARC=3 × ARD=4ms = 12ms，留 3ms 余量 */
 #define BRINGUP_LINK_CHANNEL        40U     /* 必须与遥控器一致 */
 
 /*
@@ -64,15 +63,40 @@ typedef struct
     uint8_t  checksum;
 } __attribute__((packed)) BringupLinkPacket_t;
 
+/*
+ * RC 摇杆包：遥控器 PTX 周期发，飞机 PRX 收到后写共享内存。
+ * 与遥控器 Init.h::NRF_RC_Packet_t 完全对齐，16 字节定长。
+ */
+#define RC_PACKET_MAGIC             0x5AU
+
+typedef struct
+{
+    uint8_t  magic;          /* 0x5A，区分于 BRINGUP_LINK_MAGIC=0xA5 */
+    uint8_t  seq;            /* 8位循环序号 */
+    int8_t   roll_stick;     /* 横滚摇杆 -120 ~ +120 */
+    int8_t   pitch_stick;    /* 俯仰摇杆 -120 ~ +120 */
+    int8_t   yaw_stick;      /* 偏航摇杆 -120 ~ +120 */
+    int8_t   throttle_stick; /* 油门摇杆 -120 ~ +120 */
+    uint8_t  sw_status;      /* 拨码：0=Wait, 2=Fly */
+    uint8_t  meg_status;     /* 机械爪：0=Drop, 1=Grab */
+    uint8_t  flags;          /* 备用 */
+    uint8_t  reserved[6];    /* 对齐 */
+    uint8_t  checksum;       /* XOR 前 15 字节 */
+} __attribute__((packed)) NRF_RC_Packet_t;
+
+#define RC_LINK_TIMEOUT_MS          500U   /* 500ms 没收到 RC 包 → link_ok=0，飞控触发失联保护 */
+
 /* 飞控/遥控器 NRF 物理地址（A1=飞控本机, B1=遥控器） */
 static const uint8_t s_link_drone_addr[5] = {0x34U, 0x43U, 0x10U, 0x10U, 0xA1U};
 static const uint8_t s_link_ctrl_addr[5]  = {0x34U, 0x43U, 0x10U, 0x10U, 0xB1U};
 
-static uint8_t  s_link_seq      = 0U;
-static uint32_t s_link_tx_ok    = 0UL;
-static uint32_t s_link_tx_fail  = 0UL;
-static uint32_t s_link_tx_to    = 0UL;
-static uint8_t  s_link_ready    = 0U;
+static uint8_t  s_link_seq      = 0U;     /* 飞机回包（ACK Payload）的递增序号 */
+static uint32_t s_rc_rx_count   = 0UL;    /* 收到的 RC 包总数 */
+static uint32_t s_rc_err_count  = 0UL;    /* 校验/魔数错误次数 */
+static uint32_t s_rc_lost_count = 0UL;    /* 链路超时次数 */
+static uint32_t s_last_rc_tick  = 0UL;    /* 上一次成功收到 RC 包的 tick */
+static uint8_t  s_link_ready    = 0U;     /* NRF 配置成功标志 */
+static uint32_t tick_global     = 0UL;    /* 主循环 tick 暴露给链路状态机 */
 
 static void Bringup_Beep(uint16_t on_ms, uint16_t off_ms, uint8_t times)
 {
@@ -186,15 +210,13 @@ static void Bringup_PrintTOF(void)
 
 static void Bringup_PrintNRF(void)
 {
-    /* 注意：这里不要再调 NRF_Check()！它会把 TX_ADDR 写成测试值且不还原，
-     * 导致 t=1s 第一次打印后所有 TX 都发到错误地址，对端永远收不到、永远不 ACK。
-     * 之前实测就是每次复位精确 20 个 link_ok 然后全部 timeout 的根因。 */
+    /* 注意：这里不要再调 NRF_Check()！它会把 TX_ADDR 写成测试值且不还原。 */
     uint8_t status = NRF_GetStatus();
-    printf("[NRF ] STATUS=0x%02X  link_ok=%lu fail=%lu to=%lu seq=%u ready=%u\r\n",
+    printf("[NRF ] STATUS=0x%02X  rc_rx=%lu rc_err=%lu rc_lost=%lu seq=%u ready=%u\r\n",
            status,
-           (unsigned long)s_link_tx_ok,
-           (unsigned long)s_link_tx_fail,
-           (unsigned long)s_link_tx_to,
+           (unsigned long)s_rc_rx_count,
+           (unsigned long)s_rc_err_count,
+           (unsigned long)s_rc_lost_count,
            s_link_seq,
            s_link_ready);
 }
@@ -212,19 +234,36 @@ static uint8_t Bringup_LinkChecksum(const BringupLinkPacket_t *p)
     return sum;
 }
 
-static NRF_Status_t Bringup_LinkInitTX(void)
+/*
+ * 飞机端 NRF 配置为 PRX + ACK Payload。
+ *   - 长期 RX 模式接收遥控器发来的 NRF_RC_Packet_t
+ *   - 飞机的传感器数据通过 ACK Payload 自动随 ACK 回送给遥控器
+ *   - 不需要手动切换 TX/RX 模式
+ */
+static NRF_Status_t Bringup_LinkInitRX(void)
 {
     NRF_Config_t cfg;
+    NRF_Status_t st;
 
-    cfg.mode          = NRF_MODE_TX;
+    cfg.mode          = NRF_MODE_RX;
     cfg.channel       = BRINGUP_LINK_CHANNEL;
-    cfg.data_rate     = NRF_DR_250KBPS;       /* 与遥控器一致（最稳） */
-    cfg.tx_power      = NRF_PWR_M6DBM;        /* 降功率：联调阶段足够，减少 NRF 模块瞬时电流尖峰 */
-    cfg.local_addr    = s_link_drone_addr;    /* 飞控本机 A1 */
-    cfg.peer_addr     = s_link_ctrl_addr;     /* 遥控器 B1 */
+    cfg.data_rate     = NRF_DR_250KBPS;
+    cfg.tx_power      = NRF_PWR_M6DBM;
+    cfg.local_addr    = s_link_drone_addr;    /* 飞机本机 A1 (RX_ADDR_P1) */
+    cfg.peer_addr     = s_link_ctrl_addr;     /* 遥控器 B1 (TX_ADDR + RX_ADDR_P0 ACK 匹配) */
     cfg.addr_width    = 5U;
-    cfg.payload_width = (uint8_t)sizeof(BringupLinkPacket_t);
-    return NRF_Config(&cfg);
+    cfg.payload_width = (uint8_t)sizeof(NRF_RC_Packet_t);   /* 16 字节 RC 包 */
+
+    st = NRF_Config(&cfg);
+    if (st != NRF_OK) return st;
+
+    /* 启用 ACK Payload（NRF24L01+ 特性）：必须在 Config 之后、SetMode_RX 之前 */
+    NRF_EnableAckPayload();
+
+    /* 重新切到 RX：NRF_Config 末尾根据 cfg.mode 已经切过一次，
+     * 这里在 EnableAckPayload 改 FEATURE/DYNPD 后再切一次确保生效 */
+    NRF_SetMode_RX();
+    return NRF_OK;
 }
 
 static void Bringup_LinkBuildPacket(BringupLinkPacket_t *pkt)
@@ -269,30 +308,81 @@ static void Bringup_LinkBuildPacket(BringupLinkPacket_t *pkt)
     pkt->checksum = Bringup_LinkChecksum(pkt);
 }
 
-static void Bringup_LinkSendSensors(void)
+/*
+ * 把当前最新的传感器数据更新到 NRF 内部 TX FIFO 的 ACK Payload。
+ * 每被对端 PTX 打一个包，NRF 就把这个 Payload 跟 ACK 一起回送。
+ * NRF24L01+ 的 ACK Payload TX FIFO 有 3 级深度，被取走一次就少一帧，需要持续刷新。
+ */
+static void Bringup_LinkRefreshAckPayload(void)
 {
     BringupLinkPacket_t pkt;
-    NRF_Status_t st;
 
-    if (s_link_ready == 0U)
-    {
-        return;
-    }
+    if (s_link_ready == 0U) return;
 
     Bringup_LinkBuildPacket(&pkt);
 
-    st = NRF_Transmit((const uint8_t *)&pkt, sizeof(pkt), BRINGUP_LINK_TX_TIMEOUT_MS);
-    if (st == NRF_OK)
-    {
-        s_link_tx_ok++;
+    /* 不 FlushTX：让 NRF 的 3 级 ACK TX FIFO 自然积压，
+     * 控制器每次 TX 都能收到一帧 ACK payload（最多 60ms 旧） */
+    NRF_WriteAckPayload(1U, (const uint8_t *)&pkt, (uint8_t)sizeof(pkt));
+}
+
+/*
+ * 校验 RC 包：magic + checksum (XOR 前 N-1 字节)
+ */
+static uint8_t Bringup_RCChecksum(const NRF_RC_Packet_t *p)
+{
+    const uint8_t *q = (const uint8_t *)p;
+    uint8_t sum = 0U;
+    uint8_t i;
+    for (i = 0U; i < (uint8_t)(sizeof(NRF_RC_Packet_t) - 1U); i++) {
+        sum ^= q[i];
     }
-    else if (st == NRF_TIMEOUT)
-    {
-        s_link_tx_to++;
-    }
-    else
-    {
-        s_link_tx_fail++;
+    return sum;
+}
+
+/*
+ * 一次性把 NRF RX FIFO 排空，把最新一帧 RC 包写到共享内存。
+ * 在主循环每次迭代调用。
+ */
+static void Bringup_LinkPollRC(void)
+{
+    NRF_RC_Packet_t pkt;
+
+    if (s_link_ready == 0U) return;
+
+    while (NRF_DataReady()) {
+        uint8_t len = NRF_ReadRXPayload((uint8_t *)&pkt, (uint8_t)sizeof(pkt));
+        NRF_Clear_RX_DR();
+
+        if (len != (uint8_t)sizeof(NRF_RC_Packet_t)) {
+            NRF_FlushRX();
+            s_rc_err_count++;
+            continue;
+        }
+
+        if (pkt.magic != RC_PACKET_MAGIC) {
+            s_rc_err_count++;
+            continue;
+        }
+
+        if (pkt.checksum != Bringup_RCChecksum(&pkt)) {
+            s_rc_err_count++;
+            continue;
+        }
+
+        /* 校验通过：写共享内存供 V3F 读取 */
+        g_shared_sensor.rc_roll     = (int16_t)pkt.roll_stick;
+        g_shared_sensor.rc_pitch    = (int16_t)pkt.pitch_stick;
+        g_shared_sensor.rc_yaw      = (int16_t)pkt.yaw_stick;
+        g_shared_sensor.rc_throttle = (int16_t)pkt.throttle_stick;
+        g_shared_sensor.rc_sw       = pkt.sw_status;
+        g_shared_sensor.rc_meg      = pkt.meg_status;
+        g_shared_sensor.rc_flags    = pkt.flags;
+        g_shared_sensor.rc_link_ok  = 1U;
+        s_rc_rx_count++;
+        g_shared_sensor.rc_rx_count = s_rc_rx_count;
+
+        s_last_rc_tick = tick_global;
     }
 }
 
@@ -300,10 +390,30 @@ static void Bringup_Run(void)
 {
     uint32_t tick = 0;
     uint32_t last_print = 0;
-    uint32_t last_link_tx = 0;
+    uint32_t last_ack_refresh = 0;
 
     LED_BUZZ_Init();
     //Bringup_Beep(80, 80, 2);
+
+    /* 共享内存清零，防止V3F读到随机值/NaN */
+    g_shared_sensor.roll        = 0.0f;
+    g_shared_sensor.pitch       = 0.0f;
+    g_shared_sensor.yaw         = 0.0f;
+    g_shared_sensor.altitude    = 0.0f;
+    g_shared_sensor.gyro_dps[0] = 0.0f;
+    g_shared_sensor.gyro_dps[1] = 0.0f;
+    g_shared_sensor.gyro_dps[2] = 0.0f;
+    g_shared_sensor.update_tick = 0UL;
+    g_shared_sensor.rc_roll      = 0;
+    g_shared_sensor.rc_pitch     = 0;
+    g_shared_sensor.rc_yaw       = 0;
+    g_shared_sensor.rc_throttle  = 0;
+    g_shared_sensor.rc_sw        = 0U;
+    g_shared_sensor.rc_meg       = 0U;
+    g_shared_sensor.rc_flags     = 0U;
+    g_shared_sensor.rc_link_ok   = 0U;
+    g_shared_sensor.rc_rx_count  = 0UL;
+    g_shared_sensor.rc_lost_count= 0UL;
 
     printf("\r\n==== V5F Bringup Test ====\r\n");
 
@@ -331,21 +441,20 @@ static void Bringup_Run(void)
         printf("[TOF ] init FAILED\r\n");
     }
 
-    /* NRF：作为 TX 端常驻发送传感器包给遥控器 */
+    /* NRF：作为 PRX 端，长期 RX 接收遥控器摇杆包；传感器通过 ACK Payload 自动回送 */
     NRF_Init();
     NRF_Diagnose();
     if (NRF_Check())
     {
         printf("[NRF ] online OK\r\n");
-        if (Bringup_LinkInitTX() == NRF_OK)
+        if (Bringup_LinkInitRX() == NRF_OK)
         {
             s_link_ready = 1U;
-            printf("[NRF ] TX link ready, sending sensors @%uHz to ctrl\r\n",
-                   (unsigned)(1000U / BRINGUP_LINK_TX_PERIOD_MS));
+            printf("[NRF ] PRX link ready, listening for RC packets\r\n");
         }
         else
         {
-            printf("[NRF ] TX config failed\r\n");
+            printf("[NRF ] PRX config failed\r\n");
         }
     }
     else
@@ -355,15 +464,25 @@ static void Bringup_Run(void)
 
     //Bringup_Beep(200, 0, 1);
     printf("==== Bringup loop start ====\r\n");
-    //GPIO_WriteBit(MEG_PORT, MEG_PIN, 1);
-    //Delay_Ms(5000);
-    //GPIO_WriteBit(MEG_PORT, MEG_PIN, 0);
     while(1)
     {
-        /* 清掉 ready 标志，纯轮询模式下避免帧丢弃统计错乱 */
+        tick_global = tick;
+
+        /* V5F 心跳：每个主循环迭代都+1（VOFA 调试用） */
+        g_shared_sensor.update_tick++;
+
+        /* IMU 有新帧时：清标志，同时刷新共享内存供 V3F 读取 */
         if (IMU_DataReady())
         {
+            const JY61P_Data_t *imu = IMU_GetData();
             IMU_ClearDataReady();
+
+            g_shared_sensor.roll        = imu->angle_deg[0];
+            g_shared_sensor.pitch       = imu->angle_deg[1];
+            g_shared_sensor.yaw         = imu->angle_deg[2];
+            g_shared_sensor.gyro_dps[0] = imu->gyro_dps[0];
+            g_shared_sensor.gyro_dps[1] = imu->gyro_dps[1];
+            g_shared_sensor.gyro_dps[2] = imu->gyro_dps[2];
         }
         if (LF_DataReady())
         {
@@ -374,14 +493,26 @@ static void Bringup_Run(void)
             TOF_ClearDataReady();
         }
 
-        /* 周期向遥控器发送传感器包（20Hz） */
-        if ((tick - last_link_tx) >= BRINGUP_LINK_TX_PERIOD_MS)
+        /* 持续 poll RC 包：收到就写共享内存 */
+        Bringup_LinkPollRC();
+
+        /* 50Hz 刷新 ACK Payload：让飞机最新的传感器数据准备好下次回送 */
+        if ((tick - last_ack_refresh) >= 20U)
         {
-            last_link_tx = tick;
-            Bringup_LinkSendSensors();
+            last_ack_refresh = tick;
+            Bringup_LinkRefreshAckPayload();
         }
 
-        /* 1Hz 周期打印 */
+        /* 链路超时检查：500ms 没收到 RC 包则置 link_ok=0 */
+        if (s_link_ready && g_shared_sensor.rc_link_ok &&
+            ((tick - s_last_rc_tick) >= RC_LINK_TIMEOUT_MS))
+        {
+            g_shared_sensor.rc_link_ok = 0U;
+            s_rc_lost_count++;
+            g_shared_sensor.rc_lost_count = s_rc_lost_count;
+        }
+
+        /* 1Hz 周期打印（V5F printf 已禁，调用安全） */
         if ((tick - last_print) >= BRINGUP_PRINT_PERIOD_MS)
         {
             last_print = tick;
@@ -419,7 +550,11 @@ int main(void)
     HSEM_ReleaseOneSem(HSEM_ID0, 0);
     Bringup_Run();
 #elif (Run_Core == Run_Core_V3F)
+    /* 调试期：即使工程标记为"只跑 V3F"，V5F 也强制跑起来 */
+    Bringup_Run();
 #elif (Run_Core == Run_Core_V5F)
+    Bringup_Run();
+#else
     Bringup_Run();
 #endif
 

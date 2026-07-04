@@ -1,0 +1,4 @@
+interface:
+  display_name: "CH32 V5F Sensor Link"
+  short_description: "Rules for V5F sensor and RC link code"
+  default_prompt: "Use $ch32-v5f-sensor-link when modifying V5F sensor or link code."

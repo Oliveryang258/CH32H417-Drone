@@ -37,7 +37,7 @@ typedef struct
     uint8_t  magic;
     uint8_t  packet_type;
     uint8_t  seq;
-    uint8_t  reserved;
+    uint8_t  alarm_flags;
 
     /* 光流（LF） */
     int16_t  flow_dx_cmps;
@@ -276,7 +276,7 @@ static void Bringup_LinkBuildPacket(BringupLinkPacket_t *pkt)
     pkt->magic       = BRINGUP_LINK_MAGIC;
     pkt->packet_type = BRINGUP_LINK_PACKET_TYPE;
     pkt->seq         = s_link_seq++;
-    pkt->reserved    = 0U;
+    pkt->alarm_flags = g_shared_sensor.alarm_flags;
 
     pkt->flow_dx_cmps    = lf->flow_dx_cmps;
     pkt->flow_dy_cmps    = lf->flow_dy_cmps;
@@ -414,6 +414,11 @@ static void Bringup_Run(void)
     g_shared_sensor.rc_link_ok   = 0U;
     g_shared_sensor.rc_rx_count  = 0UL;
     g_shared_sensor.rc_lost_count= 0UL;
+    g_shared_sensor.alarm_flags  = 0U;
+    g_shared_sensor.tof_distance_mm = 0xFFFFU;
+    g_shared_sensor.tof_state       = TOF_STATE_NO_UPDATE;
+    g_shared_sensor.tof_valid       = 0U;
+    g_shared_sensor.tof_update_tick = 0UL;
 
     printf("\r\n==== V5F Bringup Test ====\r\n");
 
@@ -490,6 +495,12 @@ static void Bringup_Run(void)
         }
         if (TOF_DataReady())
         {
+            const TOF_Data_t *tof = TOF_GetData();
+            g_shared_sensor.tof_distance_mm = tof->distance_mm;
+            g_shared_sensor.tof_state = tof->state;
+            g_shared_sensor.tof_valid =
+                (tof->in_range && tof->state == TOF_STATE_RANGE_VALID) ? 1U : 0U;
+            g_shared_sensor.tof_update_tick = g_shared_sensor.update_tick;
             TOF_ClearDataReady();
         }
 
@@ -508,9 +519,12 @@ static void Bringup_Run(void)
             ((tick - s_last_rc_tick) >= RC_LINK_TIMEOUT_MS))
         {
             g_shared_sensor.rc_link_ok = 0U;
+            g_shared_sensor.rc_meg = 0U;
             s_rc_lost_count++;
             g_shared_sensor.rc_lost_count = s_rc_lost_count;
         }
+
+        MEG_Control((g_shared_sensor.rc_link_ok && g_shared_sensor.rc_meg) ? 1U : 0U);
 
         /* 1Hz 周期打印（V5F printf 已禁，调用安全） */
         if ((tick - last_print) >= BRINGUP_PRINT_PERIOD_MS)

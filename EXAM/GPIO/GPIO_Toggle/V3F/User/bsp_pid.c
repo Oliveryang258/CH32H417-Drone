@@ -14,6 +14,7 @@ void PID_Reset(PID_t *p)
 {
     p->integral   = 0.0f;
     p->prev_error = 0.0f;
+    p->prev_meas  = 0.0f;
     p->deriv_filt = 0.0f;
 }
 
@@ -26,13 +27,15 @@ float PID_Update(PID_t *p, float setpoint, float measurement, float dt)
     if      (p->integral >  p->int_limit) p->integral =  p->int_limit;
     else if (p->integral < -p->int_limit) p->integral = -p->int_limit;
 
-    float deriv_raw = (error - p->prev_error) / dt;
+    /* D-on-measurement: setpoint jumps don't cause D spikes */
+    float deriv_raw = -(measurement - p->prev_meas) / dt;
     p->deriv_filt += 0.2f * (deriv_raw - p->deriv_filt);
     output = p->kp * error
            + p->ki * p->integral
            + p->kd * p->deriv_filt;
 
     p->prev_error = error;
+    p->prev_meas  = measurement;
 
     if      (output >  p->out_limit) output =  p->out_limit;
     else if (output < -p->out_limit) output = -p->out_limit;

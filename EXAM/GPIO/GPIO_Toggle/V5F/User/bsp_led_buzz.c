@@ -24,6 +24,8 @@ void LED_BUZZ_Init(void) {
 
     GPIO_InitStructure.GPIO_Pin = MEG_PIN;
     GPIO_Init(MEG_PORT, &GPIO_InitStructure);
+
+    MEG_Control(0U);
 }
 
 void LED_Control(uint8_t state){
@@ -32,4 +34,8 @@ void LED_Control(uint8_t state){
 
 void BUZZ_Control(uint8_t state){
     GPIO_WriteBit(BUZZ_PORT, BUZZ_PIN, state);
+}
+
+void MEG_Control(uint8_t state){
+    GPIO_WriteBit(MEG_PORT, MEG_PIN, state ? Bit_SET : Bit_RESET);
 }

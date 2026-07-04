@@ -5,5 +5,6 @@
 void LED_BUZZ_Init(void);
 void LED_Control(uint8_t state);
 void BUZZ_Control(uint8_t state);
+void MEG_Control(uint8_t state);
 
 #endif /* __BSP_LED_BUZZ_H */

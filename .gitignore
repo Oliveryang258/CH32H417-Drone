@@ -54,3 +54,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local simulation outputs
+tools/output/

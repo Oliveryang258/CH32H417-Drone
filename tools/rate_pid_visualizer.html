@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rate PID Visualizer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --text: #20242c;
+      --muted: #626b7a;
+      --line: #d8dde6;
+      --blue: #1264d8;
+      --green: #0f8a5f;
+      --red: #c43d3d;
+      --amber: #b56b00;
+      --ink: #111827;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 14px;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 18px;
+      overflow: auto;
+    }
+
+    main {
+      padding: 18px;
+      display: grid;
+      grid-template-rows: auto minmax(280px, 1fr) auto;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 22px 0 10px;
+      font-size: 13px;
+      line-height: 1.2;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      margin-bottom: 14px;
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 72px;
+      gap: 10px;
+      align-items: center;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--blue);
+    }
+
+    input[type="number"], select {
+      width: 100%;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 9px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+
+    button {
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+    }
+
+    .buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(100px, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 68px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 20px;
+      line-height: 1.2;
+      margin-top: 5px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .chart-wrap {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 360px;
+      padding: 12px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .legend {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 3px;
+      border-radius: 3px;
+      background: currentColor;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      min-height: 280px;
+      display: block;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+
+    th, td {
+      text-align: right;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 10px;
+      white-space: nowrap;
+    }
+
+    th:first-child, td:first-child { text-align: left; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: #eef4ff; }
+
+    .warn { color: var(--red); }
+    .ok { color: var(--green); }
+
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      main { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1>Rate PID Visualizer</h1>
+
+      <h2>Command</h2>
+      <label>
+        Plant
+        <select id="plant">
+          <option value="weak_slow">weak_slow</option>
+          <option value="nominal" selected>nominal</option>
+          <option value="strong_fast">strong_fast</option>
+        </select>
+      </label>
+      <label>
+        Target dps
+        <div class="row">
+          <input id="targetDpsRange" type="range" min="20" max="250" step="5" value="100">
+          <input id="targetDps" type="number" min="20" max="250" step="5" value="100">
+        </div>
+      </label>
+      <label>
+        Duration s
+        <div class="row">
+          <input id="durationRange" type="range" min="0.8" max="5" step="0.1" value="2">
+          <input id="duration" type="number" min="0.8" max="5" step="0.1" value="2">
+        </div>
+      </label>
+
+      <h2>PID</h2>
+      <label>
+        Kp
+        <div class="row">
+          <input id="kpRange" type="range" min="0" max="2.5" step="0.01" value="1.20">
+          <input id="kp" type="number" min="0" max="2.5" step="0.01" value="1.20">
+        </div>
+      </label>
+      <label>
+        Ki
+        <div class="row">
+          <input id="kiRange" type="range" min="0" max="0.3" step="0.001" value="0">
+          <input id="ki" type="number" min="0" max="0.3" step="0.001" value="0">
+        </div>
+      </label>
+      <label>
+        Kd
+        <div class="row">
+          <input id="kdRange" type="range" min="0" max="0.05" step="0.0005" value="0.001">
+          <input id="kd" type="number" min="0" max="0.05" step="0.0005" value="0.001">
+        </div>
+      </label>
+      <label>
+        Int limit
+        <div class="row">
+          <input id="intLimitRange" type="range" min="0" max="250" step="5" value="80">
+          <input id="intLimit" type="number" min="0" max="250" step="5" value="80">
+        </div>
+      </label>
+
+      <h2>Output limits</h2>
+      <label>
+        PID out limit us
+        <div class="row">
+          <input id="outLimitRange" type="range" min="40" max="220" step="5" value="180">
+          <input id="outLimit" type="number" min="40" max="220" step="5" value="180">
+        </div>
+      </label>
+      <label>
+        Slew us per 5ms
+        <div class="row">
+          <input id="slewRange" type="range" min="3" max="30" step="1" value="12">
+          <input id="slew" type="number" min="3" max="30" step="1" value="12">
+        </div>
+      </label>
+
+      <div class="buttons">
+        <button id="sweepBtn" class="primary">Sweep Kp/Kd</button>
+        <button id="csvBtn">Export CSV</button>
+      </div>
+    </aside>
+
+    <main>
+      <section class="metrics">
+        <div class="metric"><span>Score</span><strong id="score">0.0</strong></div>
+        <div class="metric"><span>Overshoot</span><strong id="overshoot">0.0%</strong></div>
+        <div class="metric"><span>Rise</span><strong id="rise">0ms</strong></div>
+        <div class="metric"><span>Settle</span><strong id="settle">0ms</strong></div>
+        <div class="metric"><span>Max output</span><strong id="maxOut">0us</strong></div>
+        <div class="metric"><span>Saturated</span><strong id="sat">0</strong></div>
+      </section>
+
+      <section class="chart-wrap">
+        <div class="legend">
+          <span class="key" style="color: var(--blue)"><span class="swatch"></span>setpoint dps</span>
+          <span class="key" style="color: var(--green)"><span class="swatch"></span>rate dps</span>
+          <span class="key" style="color: var(--red)"><span class="swatch"></span>slew-limited output us</span>
+          <span class="key" style="color: var(--amber)"><span class="swatch"></span>raw PID us</span>
+        </div>
+        <canvas id="chart"></canvas>
+      </section>
+
+      <table>
+        <thead>
+          <tr>
+            <th>candidate</th>
+            <th>kp</th>
+            <th>ki</th>
+            <th>kd</th>
+            <th>score</th>
+            <th>ov %</th>
+            <th>rise ms</th>
+            <th>max us</th>
+            <th>sat</th>
+          </tr>
+        </thead>
+        <tbody id="sweepRows"></tbody>
+      </table>
+    </main>
+  </div>
+
+  <script>
+    const DT = 0.005;
+    const STEP_TIME = 0.10;
+    const PLANTS = {
+      weak_slow: { name: "weak_slow", accelPerUs: 16.0, dampingPerS: 4.0, motorTauS: 0.090 },
+      nominal: { name: "nominal", accelPerUs: 24.0, dampingPerS: 5.5, motorTauS: 0.060 },
+      strong_fast: { name: "strong_fast", accelPerUs: 34.0, dampingPerS: 7.0, motorTauS: 0.040 }
+    };
+
+    const ids = [
+      "plant", "targetDps", "targetDpsRange", "duration", "durationRange",
+      "kp", "kpRange", "ki", "kiRange", "kd", "kdRange",
+      "intLimit", "intLimitRange", "outLimit", "outLimitRange", "slew", "slewRange"
+    ];
+    const el = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+    const metric = {
+      score: document.getElementById("score"),
+      overshoot: document.getElementById("overshoot"),
+      rise: document.getElementById("rise"),
+      settle: document.getElementById("settle"),
+      maxOut: document.getElementById("maxOut"),
+      sat: document.getElementById("sat")
+    };
+    const canvas = document.getElementById("chart");
+    const ctx = canvas.getContext("2d");
+    const rows = document.getElementById("sweepRows");
+    let lastTrace = [];
+
+    function clamp(value, lo, hi) {
+      return Math.max(lo, Math.min(hi, value));
+    }
+
+    function readConfig() {
+      return {
+        plant: PLANTS[el.plant.value],
+        targetDps: Number(el.targetDps.value),
+        duration: Number(el.duration.value),
+        kp: Number(el.kp.value),
+        ki: Number(el.ki.value),
+        kd: Number(el.kd.value),
+        intLimit: Number(el.intLimit.value),
+        outLimit: Number(el.outLimit.value),
+        slew: Number(el.slew.value)
+      };
+    }
+
+    function simulate(config, plantOverride) {
+      const plant = plantOverride || config.plant;
+      let integral = 0;
+      let prevError = 0;
+      let derivFilt = 0;
+      let rate = 0;
+      let motorEff = 0;
+      let prevOutput = 0;
+      let maxRate = -1e9;
+      let maxAbsOutput = 0;
+      let saturatedSteps = 0;
+      let maxSlew = 0;
+      let riseMs = Infinity;
+      const samples = [];
+      const steps = Math.max(1, Math.floor(config.duration / DT));
+      const settleBand = Math.abs(config.targetDps) * 0.05;
+
+      for (let i = 0; i < steps; i++) {
+        const t = i * DT;
+        const sp = t >= STEP_TIME ? config.targetDps : 0;
+        const error = sp - rate;
+        integral = clamp(integral + error * DT, -config.intLimit, config.intLimit);
+        const derivRaw = (error - prevError) / DT;
+        derivFilt += 0.2 * (derivRaw - derivFilt);
+        let rawOutput = config.kp * error + config.ki * integral + config.kd * derivFilt;
+        rawOutput = clamp(rawOutput, -config.outLimit, config.outLimit);
+        prevError = error;
+
+        const delta = rawOutput - prevOutput;
+        let output = rawOutput;
+        if (delta > config.slew) output = prevOutput + config.slew;
+        if (delta < -config.slew) output = prevOutput - config.slew;
+
+        maxSlew = Math.max(maxSlew, Math.abs(output - prevOutput));
+        prevOutput = output;
+        if (Math.abs(rawOutput) >= config.outLimit - 1e-6) saturatedSteps++;
+
+        motorEff += (output - motorEff) * DT / plant.motorTauS;
+        const rateDot = plant.accelPerUs * motorEff - plant.dampingPerS * rate;
+        rate += rateDot * DT;
+
+        if (t >= STEP_TIME) {
+          maxRate = Math.max(maxRate, rate);
+          if (riseMs === Infinity && rate >= 0.9 * config.targetDps) {
+            riseMs = (t - STEP_TIME) * 1000;
+          }
+        }
+
+        maxAbsOutput = Math.max(maxAbsOutput, Math.abs(output));
+        samples.push({ t, sp, rate, rawOutput, output });
+      }
+
+      const finalWindow = samples.slice(Math.floor(samples.length * 0.75));
+      const steadyError = finalWindow.reduce((sum, s) => sum + (s.sp - s.rate), 0) / Math.max(1, finalWindow.length);
+      let settleMs = Infinity;
+      for (let i = 0; i < samples.length; i++) {
+        if (samples[i].t < STEP_TIME) continue;
+        let settled = true;
+        for (let j = i; j < samples.length; j++) {
+          if (Math.abs(samples[j].sp - samples[j].rate) > settleBand) {
+            settled = false;
+            break;
+          }
+        }
+        if (settled) {
+          settleMs = (samples[i].t - STEP_TIME) * 1000;
+          break;
+        }
+      }
+
+      if (riseMs === Infinity) riseMs = config.duration * 1000;
+      if (settleMs === Infinity) settleMs = config.duration * 1000;
+      const overshootPct = Math.max(0, (maxRate - config.targetDps) / config.targetDps * 100);
+      const score = overshootPct * 3.0
+        + settleMs * 0.015
+        + riseMs * 0.004
+        + saturatedSteps * 0.2
+        + Math.abs(steadyError) * 1.5
+        + Math.max(0, maxAbsOutput - 120) * 0.2;
+
+      return {
+        plant: plant.name,
+        kp: config.kp,
+        ki: config.ki,
+        kd: config.kd,
+        overshootPct,
+        settleMs,
+        riseMs,
+        maxAbsOutput,
+        saturatedSteps,
+        maxSlew,
+        steadyError,
+        score,
+        samples
+      };
+    }
+
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(300, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(260, Math.floor(rect.height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function draw(result) {
+      resizeCanvas();
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      const pad = { l: 52, r: 24, t: 14, b: 34 };
+      const plotW = w - pad.l - pad.r;
+      const plotH = h - pad.t - pad.b;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+
+      const samples = result.samples;
+      const maxT = samples[samples.length - 1]?.t || 1;
+      const yAbs = Math.max(
+        50,
+        Math.abs(readConfig().targetDps) * 1.25,
+        ...samples.map(s => Math.abs(s.rate)),
+        ...samples.map(s => Math.abs(s.output)),
+        ...samples.map(s => Math.abs(s.rawOutput))
+      );
+
+      function x(t) { return pad.l + (t / maxT) * plotW; }
+      function y(v) { return pad.t + (1 - ((v + yAbs) / (2 * yAbs))) * plotH; }
+
+      ctx.strokeStyle = "#d8dde6";
+      ctx.lineWidth = 1;
+      ctx.fillStyle = "#626b7a";
+      ctx.font = "12px Segoe UI, Arial";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let i = -2; i <= 2; i++) {
+        const value = yAbs * i / 2;
+        const yy = y(value);
+        ctx.beginPath();
+        ctx.moveTo(pad.l, yy);
+        ctx.lineTo(w - pad.r, yy);
+        ctx.stroke();
+        ctx.fillText(value.toFixed(0), pad.l - 8, yy);
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (let i = 0; i <= 5; i++) {
+        const value = maxT * i / 5;
+        const xx = x(value);
+        ctx.beginPath();
+        ctx.moveTo(xx, pad.t);
+        ctx.lineTo(xx, h - pad.b);
+        ctx.stroke();
+        ctx.fillText(value.toFixed(1) + "s", xx, h - pad.b + 8);
+      }
+
+      function line(field, color, width) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        samples.forEach((s, index) => {
+          const xx = x(s.t);
+          const yy = y(s[field]);
+          if (index === 0) ctx.moveTo(xx, yy);
+          else ctx.lineTo(xx, yy);
+        });
+        ctx.stroke();
+      }
+
+      line("sp", "#1264d8", 2);
+      line("rate", "#0f8a5f", 2.5);
+      line("output", "#c43d3d", 1.8);
+      line("rawOutput", "#b56b00", 1.2);
+    }
+
+    function updateMetrics(result) {
+      metric.score.textContent = result.score.toFixed(1);
+      metric.overshoot.textContent = result.overshootPct.toFixed(1) + "%";
+      metric.rise.textContent = result.riseMs.toFixed(0) + "ms";
+      metric.settle.textContent = result.settleMs.toFixed(0) + "ms";
+      metric.maxOut.textContent = result.maxAbsOutput.toFixed(1) + "us";
+      metric.sat.textContent = String(result.saturatedSteps);
+      metric.sat.className = result.saturatedSteps > 0 ? "warn" : "ok";
+      metric.maxOut.className = result.maxAbsOutput > readConfig().outLimit * 0.85 ? "warn" : "ok";
+    }
+
+    function render() {
+      const result = simulate(readConfig());
+      lastTrace = result.samples;
+      updateMetrics(result);
+      draw(result);
+    }
+
+    function robustSweep() {
+      const base = readConfig();
+      const results = [];
+      for (let kp = 0.10; kp <= 1.60 + 1e-9; kp += 0.05) {
+        for (let kd = 0; kd <= 0.030 + 1e-9; kd += 0.001) {
+          const cfg = { ...base, kp: Number(kp.toFixed(3)), kd: Number(kd.toFixed(4)), ki: 0 };
+          const group = Object.values(PLANTS).map(plant => simulate(cfg, plant));
+          const worstOvershoot = Math.max(...group.map(m => m.overshootPct));
+          const worstSettle = Math.max(...group.map(m => m.settleMs));
+          const worstRise = Math.max(...group.map(m => m.riseMs));
+          const worstOutput = Math.max(...group.map(m => m.maxAbsOutput));
+          const totalSat = group.reduce((sum, m) => sum + m.saturatedSteps, 0);
+          const worstError = Math.max(...group.map(m => Math.abs(m.steadyError)));
+          if (worstOutput <= 145 && worstOvershoot <= 20 && totalSat <= 20) {
+            const score = worstOvershoot * 4.0
+              + worstRise * 0.012
+              + totalSat * 0.25
+              + worstError * 0.55
+              + Math.max(0, worstOutput - 110) * 0.25;
+            results.push({
+              kp: cfg.kp,
+              ki: 0,
+              kd: cfg.kd,
+              score,
+              worstOvershoot,
+              worstSettle,
+              worstRise,
+              worstOutput,
+              totalSat
+            });
+          }
+        }
+      }
+      results.sort((a, b) => a.score - b.score);
+      rows.innerHTML = "";
+      results.slice(0, 18).forEach((r, index) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${index + 1}</td>
+          <td>${r.kp.toFixed(2)}</td>
+          <td>${r.ki.toFixed(3)}</td>
+          <td>${r.kd.toFixed(4)}</td>
+          <td>${r.score.toFixed(1)}</td>
+          <td>${r.worstOvershoot.toFixed(1)}</td>
+          <td>${r.worstRise.toFixed(0)}</td>
+          <td>${r.worstOutput.toFixed(1)}</td>
+          <td>${r.totalSat}</td>
+        `;
+        tr.addEventListener("click", () => {
+          setPair("kp", r.kp);
+          setPair("ki", r.ki);
+          setPair("kd", r.kd);
+          render();
+        });
+        rows.appendChild(tr);
+      });
+    }
+
+    function setPair(name, value) {
+      el[name].value = value;
+      el[name + "Range"].value = value;
+    }
+
+    function bindPair(name) {
+      const input = el[name];
+      const range = el[name + "Range"];
+      input.addEventListener("input", () => {
+        range.value = input.value;
+        render();
+      });
+      range.addEventListener("input", () => {
+        input.value = range.value;
+        render();
+      });
+    }
+
+    function exportCsv() {
+      const lines = ["time_s,setpoint_dps,rate_dps,pid_raw_us,pid_slew_us"];
+      lastTrace.forEach(s => {
+        lines.push([s.t, s.sp, s.rate, s.rawOutput, s.output].map(v => Number(v).toFixed(6)).join(","));
+      });
+      const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "rate_pid_trace.csv";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    ["targetDps", "duration", "kp", "ki", "kd", "intLimit", "outLimit", "slew"].forEach(bindPair);
+    el.plant.addEventListener("input", render);
+    document.getElementById("sweepBtn").addEventListener("click", robustSweep);
+    document.getElementById("csvBtn").addEventListener("click", exportCsv);
+    window.addEventListener("resize", render);
+    render();
+    robustSweep();
+  </script>
+</body>
+</html>

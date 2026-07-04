@@ -1,0 +1,4 @@
+interface:
+  display_name: "CH32 Drone Context"
+  short_description: "Project context and coordination rules"
+  default_prompt: "Use $ch32-drone-project-context before working on the CH32H417 drone project."

@@ -1,4 +1,0 @@
-interface:
-  display_name: "CH32 V3F Flight Control"
-  short_description: "Rules for V3F flight-control code changes"
-  default_prompt: "Use $ch32-v3f-flight-control when modifying V3F flight-control code."

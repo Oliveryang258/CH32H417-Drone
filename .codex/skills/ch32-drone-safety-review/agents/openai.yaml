@@ -1,4 +1,0 @@
-interface:
-  display_name: "CH32 Drone Safety Review"
-  short_description: "Safety review checklist for drone changes"
-  default_prompt: "Use $ch32-drone-safety-review before approving safety-critical drone changes."

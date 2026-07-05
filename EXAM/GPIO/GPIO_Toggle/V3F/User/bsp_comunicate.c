@@ -71,7 +71,8 @@ void COMM_Init(void)
     /* 5. 使能 RXNE 中断 */
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
 
-    /* 6. 使能 NVIC（CH32H417 写法，无 NVIC_InitTypeDef） */
+    /* 6. 使能 NVIC，优先级最高（过流 0xDD 必须抢断 PID ISR） */
+    NVIC_SetPriority(USART1_IRQn, 0x00);
     NVIC_EnableIRQ(USART1_IRQn);
 
     /* 7. 使能 USART1 外设 */

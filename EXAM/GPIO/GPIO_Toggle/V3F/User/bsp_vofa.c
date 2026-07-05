@@ -106,8 +106,9 @@ void BSP_VOFA_Init(uint32_t baudrate)
     USART_InitStructure.USART_Mode                = USART_Mode_Tx | USART_Mode_Rx;
     USART_Init(USART3, &USART_InitStructure);
 
-    /* 开启 RXNE 中断以接收 Commander 命令 */
+    /* 开启 RXNE 中断，优先级低于 TIM2 PID */
     USART_ITConfig(USART3, USART_IT_RXNE, ENABLE);
+    NVIC_SetPriority(USART3_IRQn, 0x80);
     NVIC_EnableIRQ(USART3_IRQn);
 
     USART_Cmd(USART3, ENABLE);

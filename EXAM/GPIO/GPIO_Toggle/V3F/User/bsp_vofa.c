@@ -30,6 +30,7 @@ static VOFA_Packet_t s_packet = {
 static uint8_t  s_rx_buf[VOFA_RX_BUF_SIZE];
 static volatile uint8_t  s_rx_head = 0U;
 static volatile uint8_t  s_rx_tail = 0U;
+static volatile uint8_t  s_connected = 0U;
 
 #define VOFA_TX_BUF_SIZE 512U
 static uint8_t  s_tx_buf[VOFA_TX_BUF_SIZE];
@@ -112,24 +113,30 @@ void BSP_VOFA_Init(uint32_t baudrate)
     USART_Cmd(USART3, ENABLE);
 }
 
+uint8_t BSP_VOFA_IsConnected(void)
+{
+    return s_connected;
+}
+
 void BSP_VOFA_Send(float *data, uint8_t count)
 {
     uint8_t  i;
     uint8_t  n = (count > VOFA_CHANNEL_NUM) ? VOFA_CHANNEL_NUM : count;
     uint8_t *ptr;
 
+    if (!s_connected) return;
+
     for(i = 0; i < n; i++) s_packet.channels[i] = data[i];
     for(i = n; i < VOFA_CHANNEL_NUM; i++) s_packet.channels[i] = 0.0f;
 
     ptr = (uint8_t *)&s_packet;
-    /* Non-blocking: this returns after copying into the TX queue. Actual byte
-     * transfer is continued by USART3 TXE interrupts. */
     (void)VOFA_QueueBytes(ptr, (uint16_t)sizeof(VOFA_Packet_t));
 }
 
 void BSP_VOFA_SendJustFloat(float ch1, float ch2, float ch3, float ch4)
 {
     uint8_t *ptr;
+    if (!s_connected) return;
     s_packet.channels[0] = ch1;
     s_packet.channels[1] = ch2;
     s_packet.channels[2] = ch3;
@@ -152,6 +159,7 @@ void USART3_IRQHandler(void)
     {
         uint8_t data = (uint8_t)USART_ReceiveData(USART3);
         uint8_t next = (s_rx_head + 1U) % VOFA_RX_BUF_SIZE;
+        s_connected = 1U;
         if(next != s_rx_tail) { s_rx_buf[s_rx_head] = data; s_rx_head = next; }
     }
 

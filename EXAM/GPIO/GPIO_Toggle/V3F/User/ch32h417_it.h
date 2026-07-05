@@ -14,6 +14,11 @@
 
 #include "debug.h"
 
+/* PID 定时器周期（TIM2 ARR），ISR 和 main 共享 */
+#define PID_PERIOD_US       6667U    /* 6667us ≈ 150Hz */
+
+void PID_Tick(void);
+
 
 #endif 
 

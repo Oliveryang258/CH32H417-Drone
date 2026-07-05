@@ -28,13 +28,55 @@ static VOFA_Packet_t s_packet = {
 /* RX 环形缓冲区 */
 #define VOFA_RX_BUF_SIZE 64U
 static uint8_t  s_rx_buf[VOFA_RX_BUF_SIZE];
-static uint8_t  s_rx_head = 0U;
-static uint8_t  s_rx_tail = 0U;
+static volatile uint8_t  s_rx_head = 0U;
+static volatile uint8_t  s_rx_tail = 0U;
+static volatile uint8_t  s_connected = 0U;
 
-static void VOFA_SendByte(uint8_t byte)
+#define VOFA_TX_BUF_SIZE 512U
+static uint8_t  s_tx_buf[VOFA_TX_BUF_SIZE];
+static volatile uint16_t s_tx_head = 0U;
+static volatile uint16_t s_tx_tail = 0U;
+
+/* TX ring buffer free space.
+ * One byte is kept empty to distinguish "full" from "empty". */
+static uint16_t VOFA_TxFree(void)
 {
-    USART_SendData(USART3, byte);
-    while(USART_GetFlagStatus(USART3, USART_FLAG_TXE) == RESET);
+    uint16_t head = s_tx_head;
+    uint16_t tail = s_tx_tail;
+
+    if(head >= tail) {
+        return (uint16_t)(VOFA_TX_BUF_SIZE - (head - tail) - 1U);
+    }
+    return (uint16_t)(tail - head - 1U);
+}
+
+static void VOFA_TxKick(void)
+{
+    /* Enabling TXE lets USART3_IRQHandler feed bytes whenever the TX data
+     * register becomes empty. The main loop does not wait for UART timing. */
+    USART_ITConfig(USART3, USART_IT_TXE, ENABLE);
+}
+
+/* Queue a whole VOFA frame for interrupt-driven transmission.
+ * If Bluetooth is slower than telemetry generation, drop this frame instead
+ * of blocking the flight-control loop. */
+static uint8_t VOFA_QueueBytes(const uint8_t *data, uint16_t len)
+{
+    uint16_t i;
+
+    NVIC_DisableIRQ(USART3_IRQn);
+    if(VOFA_TxFree() < len) {
+        NVIC_EnableIRQ(USART3_IRQn);
+        return 0U;
+    }
+
+    for(i = 0U; i < len; i++) {
+        s_tx_buf[s_tx_head] = data[i];
+        s_tx_head = (uint16_t)((s_tx_head + 1U) % VOFA_TX_BUF_SIZE);
+    }
+    VOFA_TxKick();
+    NVIC_EnableIRQ(USART3_IRQn);
+    return 1U;
 }
 
 void BSP_VOFA_Init(uint32_t baudrate)
@@ -64,11 +106,17 @@ void BSP_VOFA_Init(uint32_t baudrate)
     USART_InitStructure.USART_Mode                = USART_Mode_Tx | USART_Mode_Rx;
     USART_Init(USART3, &USART_InitStructure);
 
-    /* 开启 RXNE 中断以接收 Commander 命令 */
+    /* 开启 RXNE 中断，优先级低于 TIM2 PID */
     USART_ITConfig(USART3, USART_IT_RXNE, ENABLE);
+    NVIC_SetPriority(USART3_IRQn, 0x80);
     NVIC_EnableIRQ(USART3_IRQn);
 
     USART_Cmd(USART3, ENABLE);
+}
+
+uint8_t BSP_VOFA_IsConnected(void)
+{
+    return s_connected;
 }
 
 void BSP_VOFA_Send(float *data, uint8_t count)
@@ -77,23 +125,25 @@ void BSP_VOFA_Send(float *data, uint8_t count)
     uint8_t  n = (count > VOFA_CHANNEL_NUM) ? VOFA_CHANNEL_NUM : count;
     uint8_t *ptr;
 
+    if (!s_connected) return;
+
     for(i = 0; i < n; i++) s_packet.channels[i] = data[i];
     for(i = n; i < VOFA_CHANNEL_NUM; i++) s_packet.channels[i] = 0.0f;
 
     ptr = (uint8_t *)&s_packet;
-    for(i = 0; i < sizeof(VOFA_Packet_t); i++) VOFA_SendByte(ptr[i]);
+    (void)VOFA_QueueBytes(ptr, (uint16_t)sizeof(VOFA_Packet_t));
 }
 
 void BSP_VOFA_SendJustFloat(float ch1, float ch2, float ch3, float ch4)
 {
     uint8_t *ptr;
-    uint8_t  i;
+    if (!s_connected) return;
     s_packet.channels[0] = ch1;
     s_packet.channels[1] = ch2;
     s_packet.channels[2] = ch3;
     s_packet.channels[3] = ch4;
     ptr = (uint8_t *)&s_packet;
-    for(i = 0; i < (uint8_t)sizeof(VOFA_Packet_t); i++) VOFA_SendByte(ptr[i]);
+    (void)VOFA_QueueBytes(ptr, (uint16_t)sizeof(VOFA_Packet_t));
 }
 
 uint8_t VOFA_RxRead(uint8_t *out)
@@ -110,7 +160,20 @@ void USART3_IRQHandler(void)
     {
         uint8_t data = (uint8_t)USART_ReceiveData(USART3);
         uint8_t next = (s_rx_head + 1U) % VOFA_RX_BUF_SIZE;
+        s_connected = 1U;
         if(next != s_rx_tail) { s_rx_buf[s_rx_head] = data; s_rx_head = next; }
+    }
+
+    if(USART_GetITStatus(USART3, USART_IT_TXE) != RESET)
+    {
+        /* TXE interrupt drains one queued byte per interrupt. Disable TXE when
+         * the queue becomes empty, otherwise USART3 would interrupt forever. */
+        if(s_tx_tail != s_tx_head) {
+            USART_SendData(USART3, s_tx_buf[s_tx_tail]);
+            s_tx_tail = (uint16_t)((s_tx_tail + 1U) % VOFA_TX_BUF_SIZE);
+        } else {
+            USART_ITConfig(USART3, USART_IT_TXE, DISABLE);
+        }
     }
 }
 

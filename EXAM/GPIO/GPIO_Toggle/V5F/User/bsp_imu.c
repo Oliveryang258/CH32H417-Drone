@@ -10,7 +10,7 @@
 #define IMU_USART_IRQn            USART4_IRQn
 #define IMU_USART_CLK             RCC_HB1Periph_USART4
 #define IMU_USART_AF              GPIO_AF7
-#define IMU_USART_BAUDRATE        9600U     /* JY61P 出厂默认 9600 */
+#define IMU_USART_BAUDRATE        115200U   /* JY61P saved setting: 115200 bps, 200Hz output */
 
 #define IMU_BOARD_TX_PIN          GPIO_Pin_6         /* PC6 -> USART4_TX  (MCU 发，连 IMU 模块 RX) */
 #define IMU_BOARD_RX_PIN          GPIO_Pin_7         /* PC7 -> USART4_RX  (MCU 收，连 IMU 模块 TX) */
@@ -272,6 +272,8 @@ static void JY61P_ParseFrame(const uint8_t *frame)
             s_imu_data.gyro_dps[0] = JY61P_ConvertGyro(raw_x);
             s_imu_data.gyro_dps[1] = JY61P_ConvertGyro(raw_y);
             s_imu_data.gyro_dps[2] = JY61P_ConvertGyro(raw_z);
+            s_imu_data.frame_updated = frame[1];
+            s_imu_data_ready = 1U;
             break;
 
         case JY61P_FRAME_ANGLE:

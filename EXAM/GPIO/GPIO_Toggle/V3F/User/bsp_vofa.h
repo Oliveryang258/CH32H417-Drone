@@ -39,6 +39,9 @@ void BSP_VOFA_Send(float *data, uint8_t count);
  */
 void BSP_VOFA_SendJustFloat(float ch1, float ch2, float ch3, float ch4);
 
+/* 返回 1 表示已收到过 PC 端数据（蓝牙已连接） */
+uint8_t BSP_VOFA_IsConnected(void);
+
 /* 从 RX 缓冲区读一字节（用于接收 Commander 命令），返回 1=有数据，0=空 */
 uint8_t VOFA_RxRead(uint8_t *out);
 

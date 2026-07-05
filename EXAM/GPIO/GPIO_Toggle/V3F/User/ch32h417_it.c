@@ -12,7 +12,6 @@
 #include "ch32h417_it.h"
 
 /* 外部标志位（main.c 定义） */
-extern volatile uint8_t  g_pid_tick_flag;
 extern volatile uint32_t g_sys_tick;
 
 void NMI_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -34,7 +33,7 @@ void TIM2_IRQHandler(void)
         g_sys_tick++;
     }
 
-    g_pid_tick_flag = 1;
+    PID_Tick();
 }
 
 /*********************************************************************

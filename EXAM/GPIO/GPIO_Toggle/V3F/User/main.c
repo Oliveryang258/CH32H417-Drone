@@ -11,7 +11,7 @@
 
 /* ---- 调参参数（可通过 VOFA Commander 在线修改�?---- */
 /* 注意：当前全部置 0 用于油门直通测试，
- *       �?PID 调试架后通过 VOFA Commander �?rp/rd... 命令开�?*/
+ *       PID 调试架后通过 VOFA Commander �?rp/rd... 命令开�?*/
 volatile float g_kp_roll  = 0.0f;
 volatile float g_ki_roll  = 0.0f;
 volatile float g_kd_roll  = 0.0f;
@@ -25,7 +25,7 @@ volatile float g_ki_yaw   = 0.00f;
 volatile float g_kd_yaw   = 0.00f;
 volatile float g_kp_yaw_angle = 0.0f;
 
-/* 油门覆盖�?0 时忽略摇杆，固定油门值（用于 PID 调试架）�? = 使用摇杆 */
+/* 油门覆盖0 时忽略摇杆，固定油门值（用于 PID 调试架） = 使用摇杆 */
 volatile float g_thr_override = 0.0f;
 volatile uint16_t g_thr_rc_max_us = 1435U;
 
@@ -55,8 +55,6 @@ volatile uint8_t g_test_motor = 0U;
 volatile uint16_t g_motor_slew_us = 12U;
 volatile float g_pid_out_limit = 180.0f;
 
-/* PID 定时器标志位（TIM2 ISR 置 1，PID 消费后清 0）*/
-volatile uint8_t  g_pid_tick_flag = 0;
 volatile uint32_t g_sys_tick = 0;  /* 1ms 系统时钟（TIM2 ISR 内从 150Hz 导出）*/
 
 volatile uint8_t  g_test_ramp_active = 0U;
@@ -189,9 +187,9 @@ static void CMD_Parse(const char *line)
         }
     }
     else if (!strncmp(line, "pl", 2)) {
-        /* PID 输出上限（三轴统一）。默�?100，调参时可临时降�?60 卡住失步红线�?
-         * 找到合�?kp 后再放回 100。�?= �?PID 周期内能贡献给单电机 PWM 的最�?us�?
-         * 不影响积分限（int_limit），那个仍由 PID_Init 决定�?*/
+        /* PID 输出上限（三轴统一）。默认100，调参时可临时降到60 卡住失步红线?
+         * 找到合�?kp 后再放回 100。�?= �?PID 周期内能贡献给单电机 PWM 的最大us数?
+         * 不影响积分限（int_limit），那个仍由 PID_Init 决定*/
         float v = val;
         if (v >= 10.0f && v <= 200.0f) {
             g_pid_out_limit = v;
@@ -307,8 +305,8 @@ static uint8_t V307_AlarmPoll(uint32_t now_ms)
  *
  * 这里有两个独立的油门上限，含义完全不同，**不要混用**�?
  *
- *   THR_MAX_US        —�?油门"操作上限"。摇杆推到顶 / tr 命令最�?
- *                        只能�?thr_base 达到这个值。这就是�?打算�?
+ *   THR_MAX_US        —  油门"操作上限"。摇杆推到顶 / tr 命令最?
+ *                        只能 thr_base 达到这个值。这就是�?打算�?
  *                        到多高油�?的目标�?
  *
  *   PWM_SAFE_MAX_US   —�?每路电机 PWM 输出�?硬上�?。是 thr_base �?
@@ -324,8 +322,7 @@ static uint8_t V307_AlarmPoll(uint32_t now_ms)
 #define THR_RC_IDLE_US      1050U    /* 遥控器油门中位目标，避免逐飞成品电调低油门关�?*/
 #define THR_TEST_MAX_US     1550U    /* tr/gr �?bench 测试能拉到的最大目标油�?*/
 #define THR_MAX_US          THR_TEST_MAX_US
-#define DEG_TO_RAD          0.01745329251994329577f
-#define YAW_RATE_LIMIT_RAD  (30.0f * DEG_TO_RAD)
+#define YAW_RATE_LIMIT_DPS  30.0f
 #define PWM_SAFE_MAX_US     1750U    /* Hard PWM cap including PID margin. */
 #define ARM_THR_THRESHOLD   (-100)   /* 油门需 �?此值才能解�?*/
 #define PID_PERIOD_US       6667U    /* PID 周期 6667us ≈ 150Hz (TIM2 ARR) */
@@ -375,13 +372,6 @@ static uint16_t mix_clamp(float val)
     return (uint16_t)val;
 }
 
-typedef struct {
-    float w;
-    float x;
-    float y;
-    float z;
-} Quat_t;
-
 static float clampf(float v, float lo, float hi)
 {
     if (v < lo) return lo;
@@ -389,50 +379,18 @@ static float clampf(float v, float lo, float hi)
     return v;
 }
 
-static Quat_t quat_from_euler_rad(float roll, float pitch, float yaw)
+
+//更新至速率PD控制器
+static float RatePD_Update(PID_t *p, float rate_sp, float gyro_dps, float dt)
 {
-    float cr = cosf(roll * 0.5f);
-    float sr = sinf(roll * 0.5f);
-    float cp = cosf(pitch * 0.5f);
-    float sp = sinf(pitch * 0.5f);
-    float cy = cosf(yaw * 0.5f);
-    float sy = sinf(yaw * 0.5f);
-    Quat_t q;
-
-    q.w = cr * cp * cy + sr * sp * sy;
-    q.x = sr * cp * cy - cr * sp * sy;
-    q.y = cr * sp * cy + sr * cp * sy;
-    q.z = cr * cp * sy - sr * sp * cy;
-    return q;
-}
-
-static void quat_error_to_rate_sp(const Quat_t *current,
-                                  float kp_roll, float kp_pitch, float kp_yaw,
-                                  float limit_roll, float limit_pitch, float limit_yaw,
-                                  float *sp_roll, float *sp_pitch, float *sp_yaw,
-                                  float *err_roll, float *err_pitch, float *err_yaw)
-{
-    float sign = (current->w < 0.0f) ? 1.0f : -1.0f;
-
-    *err_roll  = 2.0f * sign * current->x;
-    *err_pitch = 2.0f * sign * current->y;
-    *err_yaw   = 2.0f * sign * current->z;
-
-    *sp_roll  = clampf(kp_roll  * (*err_roll),  -limit_roll,  limit_roll);
-    *sp_pitch = clampf(kp_pitch * (*err_pitch), -limit_pitch, limit_pitch);
-    *sp_yaw   = clampf(kp_yaw   * (*err_yaw),   -limit_yaw,   limit_yaw);
-}
-
-static float RatePD_Update(PID_t *p, float rate_sp, float gyro_rad_s, float dt)
-{
-    float error = rate_sp - gyro_rad_s;
-    float deriv_raw = -(gyro_rad_s - p->prev_meas) / dt;
+    float error = rate_sp - gyro_dps;
+    float deriv_raw = -(gyro_dps - p->prev_meas) / dt;
     float output;
 
     p->deriv_filt += 0.2f * (deriv_raw - p->deriv_filt);
     output = p->kp * error + p->kd * p->deriv_filt;
     p->prev_error = error;
-    p->prev_meas = gyro_rad_s;
+    p->prev_meas = gyro_dps;
 
     if (output > p->out_limit) output = p->out_limit;
     if (output < -p->out_limit) output = -p->out_limit;
@@ -480,8 +438,8 @@ static void PID_Timer_Init(void)
     TIM_Cmd(TIM2, ENABLE);
 }
 
-/* ---- PID 主函数（由 main 循环在 g_pid_tick_flag 触发时调用）---- */
-static void PID_Tick(void)
+/* ---- PID 主函数（由 TIM2 ISR 直接调用 @ 150Hz）---- */
+void PID_Tick(void)
 {
     if (!s_armed) return;
 
@@ -527,8 +485,9 @@ static void PID_Tick(void)
     pid_pitch.ki = 0.0f;
     pid_pitch.kd = g_kd_pitch;
     pid_yaw.kp   = g_kp_yaw;
-    pid_yaw.ki   = 0.0f;
+    pid_yaw.ki   = g_ki_yaw;
     pid_yaw.kd   = g_kd_yaw;
+    pid_yaw.int_limit  = 50.0f;
     pid_roll.out_limit  = g_pid_out_limit;
     pid_pitch.out_limit = g_pid_out_limit;
     pid_yaw.out_limit   = g_pid_out_limit;
@@ -582,40 +541,36 @@ static void PID_Tick(void)
     }
 
     /* 读取传感器（每个 PID tick 都需要最新角速度） */
-    float gyro_roll_rad_s  = g_shared_sensor.gyro_dps[0] * DEG_TO_RAD;
-    float gyro_pitch_rad_s = g_shared_sensor.gyro_dps[1] * DEG_TO_RAD;
-    float gyro_yaw_rad_s   = g_shared_sensor.gyro_dps[2] * DEG_TO_RAD;
+    float gyro_roll_dps  = g_shared_sensor.gyro_dps[0];
+    float gyro_pitch_dps = g_shared_sensor.gyro_dps[1];
+    float gyro_yaw_dps   = g_shared_sensor.gyro_dps[2];
 
-    /* 外环：姿态角 → 角速度期望 @ 75Hz（每 2 个 PID tick 跑一次） */
+    /* 外环：姿态角 → 角速度期望 @ 75Hz（每 2 个 PID tick 跑一次）
+     * 直接用欧拉角线性误差（V5F IMU 已做姿态解算），目标水平 0°。 */
     {
         static uint8_t s_pid_cycle = 0;
         s_pid_cycle++;
         if (s_pid_cycle & 1U) {
-            float roll_rad  = g_shared_sensor.roll  * DEG_TO_RAD;
-            float pitch_rad = g_shared_sensor.pitch * DEG_TO_RAD;
-            float yaw_rad   = g_shared_sensor.yaw   * DEG_TO_RAD;
-            float sp_roll, sp_pitch, sp_yaw;
-            float err_roll, err_pitch, err_yaw;
-            Quat_t q_current = quat_from_euler_rad(roll_rad, pitch_rad, yaw_rad);
+            float err_roll  = -g_shared_sensor.roll;
+            float err_pitch = -g_shared_sensor.pitch;
+            float err_yaw   = -g_shared_sensor.yaw;
 
-            quat_error_to_rate_sp(&q_current,
-                                  g_kp_roll_angle, g_kp_pitch_angle, g_kp_yaw_angle,
-                                  g_roll_angle_rate_limit * DEG_TO_RAD,
-                                  g_pitch_angle_rate_limit * DEG_TO_RAD,
-                                  YAW_RATE_LIMIT_RAD,
-                                  &sp_roll, &sp_pitch, &sp_yaw,
-                                  &err_roll, &err_pitch, &err_yaw);
-
-            pitch_angle_rate_sp = sp_pitch;
-            roll_angle_rate_sp  = sp_roll;
-            yaw_angle_rate_sp   = sp_yaw;
+            roll_angle_rate_sp  = clampf(g_kp_roll_angle  * err_roll,
+                                         -g_roll_angle_rate_limit,
+                                          g_roll_angle_rate_limit);
+            pitch_angle_rate_sp = clampf(g_kp_pitch_angle * err_pitch,
+                                         -g_pitch_angle_rate_limit,
+                                          g_pitch_angle_rate_limit);
+            yaw_angle_rate_sp   = clampf(g_kp_yaw_angle   * err_yaw,
+                                         -YAW_RATE_LIMIT_DPS,
+                                          YAW_RATE_LIMIT_DPS);
         }
     }
 
     /* 内环：角速度 PD @ 150Hz（每个 PID tick 都跑） */
-    out_roll  = RatePD_Update(&pid_roll,  roll_angle_rate_sp,  gyro_roll_rad_s,  PID_DT);
-    out_pitch = RatePD_Update(&pid_pitch, pitch_angle_rate_sp, gyro_pitch_rad_s, PID_DT);
-    out_yaw   = RatePD_Update(&pid_yaw,   yaw_angle_rate_sp,   gyro_yaw_rad_s,   PID_DT);
+    out_roll  = RatePD_Update(&pid_roll,  roll_angle_rate_sp,  gyro_roll_dps,  PID_DT);
+    out_pitch = RatePD_Update(&pid_pitch, pitch_angle_rate_sp, gyro_pitch_dps, PID_DT);
+    out_yaw   = PID_Update(&pid_yaw,   yaw_angle_rate_sp,   gyro_yaw_dps,   PID_DT);
 
     /* 油门目标：缓升测试 > tr override > RC 摇杆 */
     float thr_target = (float)PWM_MIN_PULSE_US;
@@ -794,9 +749,9 @@ int main(void)
      * 可以放宽�?±150~200。积分限保持小，避免长期偏置时狂涨�?*/
     PID_Init(&pid_roll,        g_kp_roll,        0.0f,             g_kd_roll,        180.0f, 200.0f);
     PID_Init(&pid_pitch,       g_kp_pitch,       0.0f,             g_kd_pitch,       180.0f,  80.0f);
-    PID_Init(&pid_yaw,         g_kp_yaw,         0.0f,             g_kd_yaw,         180.0f,  50.0f);
+    PID_Init(&pid_yaw,         g_kp_yaw,         g_ki_yaw,         g_kd_yaw,         180.0f,  50.0f);
 
-           (double)g_kp_roll, (double)g_kd_roll);
+    enum { STATE_DISARMED, STATE_ARMED } state = STATE_DISARMED;
 
     while(1)
     {
@@ -808,48 +763,17 @@ int main(void)
                 sensor_seen_local_ms = g_sys_tick;
             }
         }
-        uint8_t v307_alarm_flags = V307_AlarmPoll(g_sys_tick);   /* 解析 V307 数据流，处理报警/保护 */
+        uint8_t v307_alarm_flags = V307_AlarmPoll(g_sys_tick);
         uint8_t v307_overcurrent = (v307_alarm_flags & SHARED_ALARM_OVERCURRENT) ? 1U : 0U;
 
-        if (v307_overcurrent && s_armed) {
-            PWM_Lock();
-            s_armed = 0U;
-            out_roll = out_pitch = out_yaw = 0.0f;
-            PID_Reset(&pid_roll);
-            PID_Reset(&pid_pitch);
-            PID_Reset(&pid_yaw);
-            pitch_angle_rate_sp = 0.0f;
-            roll_angle_rate_sp  = 0.0f;
-            g_thr_override     = 0.0f;
-            g_test_ramp_active = 0U;
-            g_test_ramp_start_tick = 0U;
-            soft_stop_active = 0U;
-            soft_stop_start_tick = 0U;
-        }
+        switch (state) {
+        case STATE_ARMED: {
+            uint8_t in_fly = ((g_shared_sensor.rc_sw == 2U) &&
+                              (g_shared_sensor.rc_link_ok == 1U));
 
-        /* ================================================================
-         * 解锁 / 锁定逻辑
-         * ================================================================ */
-        uint8_t in_fly = ((g_shared_sensor.rc_sw == 2U) &&
-                          (g_shared_sensor.rc_link_ok == 1U));
-
-        if (in_fly) {
-            if (!s_armed && !v307_overcurrent && STICK_THROTTLE <= ARM_THR_THRESHOLD) {
-                if (PWM_Arm() == PWM_OK) {
-                    s_armed = 1U;
-                    PID_Reset(&pid_roll);
-                    PID_Reset(&pid_pitch);
-                    PID_Reset(&pid_yaw);
-                    pitch_angle_rate_sp = 0.0f;
-                    roll_angle_rate_sp  = 0.0f;
-                    thr_base = 1000.0f;     /* 缓升起点：从完全停转开�?*/
-                    prev_pwm[0] = prev_pwm[1] = prev_pwm[2] = prev_pwm[3] = PWM_MIN_PULSE_US;
-                    soft_stop_active = 0U;
-                    soft_stop_start_tick = 0U;
-                }
-            }
-        } else {
-            if (s_armed) {
+            /* 上锁条件：RC 丢失 或 过流 */
+            if (!in_fly || v307_overcurrent) {
+                NVIC_DisableIRQ(TIM2_IRQn);
                 PWM_Lock();
                 s_armed = 0U;
                 out_roll = out_pitch = out_yaw = 0.0f;
@@ -858,27 +782,46 @@ int main(void)
                 PID_Reset(&pid_yaw);
                 pitch_angle_rate_sp = 0.0f;
                 roll_angle_rate_sp  = 0.0f;
-                /* Clear transient throttle/ramp overrides on lock; keep slew and PID gains. */
                 g_thr_override     = 0.0f;
                 g_test_ramp_active = 0U;
                 g_test_ramp_start_tick = 0U;
                 soft_stop_active = 0U;
                 soft_stop_start_tick = 0U;
+                NVIC_EnableIRQ(TIM2_IRQn);
+                state = STATE_DISARMED;
+                break;
             }
-        }
 
-        /* ================================================================
-         * 150Hz PID 更新（由 TIM2 ISR 的 g_pid_tick_flag 触发）
-         * ================================================================ */
-        if (g_pid_tick_flag) {
-            g_pid_tick_flag = 0;
-            PID_Tick();
-            continue;
+            break;
         }
+        case STATE_DISARMED:
+        default: {
+            uint8_t in_fly = ((g_shared_sensor.rc_sw == 2U) &&
+                              (g_shared_sensor.rc_link_ok == 1U));
 
-        /* ================================================================
-         * VOFA 遥测（Pitch 调参布局�?
-         * ================================================================ */
+            /* 解锁条件：RC 飞控档位 + 油门最低 + 无过流 */
+            if (in_fly && !v307_overcurrent && STICK_THROTTLE <= ARM_THR_THRESHOLD) {
+                if (PWM_Arm() == PWM_OK) {
+                    NVIC_DisableIRQ(TIM2_IRQn);
+                    s_armed = 1U;
+                    PID_Reset(&pid_roll);
+                    PID_Reset(&pid_pitch);
+                    PID_Reset(&pid_yaw);
+                    pitch_angle_rate_sp = 0.0f;
+                    roll_angle_rate_sp  = 0.0f;
+                    thr_base = 1000.0f;
+                    prev_pwm[0] = prev_pwm[1] = prev_pwm[2] = prev_pwm[3] = PWM_MIN_PULSE_US;
+                    soft_stop_active = 0U;
+                    soft_stop_start_tick = 0U;
+                    NVIC_EnableIRQ(TIM2_IRQn);
+                    state = STATE_ARMED;
+                }
+            }
+            break;
+        }
+        } /* end switch */
+
+        /* ---- VOFA 遥测（ARMED / DISARMED 均发送）---- */
         if (g_vofa_enable) {
             uint32_t vofa_elapsed = g_sys_tick - last_vofa;
             if (vofa_elapsed > 0U) {
@@ -900,41 +843,30 @@ int main(void)
             float throttle_avg = (pwm1 + pwm2 + pwm3 + pwm4) * 0.25f;
 
             if (g_vofa_view == VOFA_VIEW_IMU) {
-                vofa[0] = g_shared_sensor.roll * DEG_TO_RAD;
-                vofa[1] = g_shared_sensor.pitch * DEG_TO_RAD;
-                vofa[2] = g_shared_sensor.yaw * DEG_TO_RAD;
-                vofa[3] = g_shared_sensor.gyro_dps[0] * DEG_TO_RAD;
-                vofa[4] = g_shared_sensor.gyro_dps[1] * DEG_TO_RAD;
-                vofa[5] = g_shared_sensor.gyro_dps[2] * DEG_TO_RAD;
+                vofa[0] = g_shared_sensor.roll;
+                vofa[1] = g_shared_sensor.pitch;
+                vofa[2] = g_shared_sensor.yaw;
+                vofa[3] = g_shared_sensor.gyro_dps[0];
+                vofa[4] = g_shared_sensor.gyro_dps[1];
+                vofa[5] = g_shared_sensor.gyro_dps[2];
                 vofa[6] = (float)(g_sys_tick - sensor_seen_local_ms);
                 vofa[7] = (float)sensor_seen_update_tick;
                 BSP_VOFA_Send(vofa, 8U);
-                continue;
-            }
-
-            {
-                float roll_rad  = g_shared_sensor.roll  * DEG_TO_RAD;
-                float pitch_rad = g_shared_sensor.pitch * DEG_TO_RAD;
-                float yaw_rad   = g_shared_sensor.yaw   * DEG_TO_RAD;
-                Quat_t q_current = quat_from_euler_rad(roll_rad, pitch_rad, yaw_rad);
-                float er, ep, ey;
-                float dummy_r, dummy_p, dummy_y;
-
-                quat_error_to_rate_sp(&q_current,
-                                      g_kp_roll_angle, g_kp_pitch_angle, g_kp_yaw_angle,
-                                      g_roll_angle_rate_limit * DEG_TO_RAD,
-                                      g_pitch_angle_rate_limit * DEG_TO_RAD,
-                                      YAW_RATE_LIMIT_RAD,
-                                      &dummy_r, &dummy_p, &dummy_y,
-                                      &er, &ep, &ey);
+            } else {
+                float roll_deg  = g_shared_sensor.roll;
+                float pitch_deg = g_shared_sensor.pitch;
+                float yaw_deg   = g_shared_sensor.yaw;
+                float er = -roll_deg;
+                float ep = -pitch_deg;
+                float ey = -yaw_deg;
 
                 switch (g_vofa_axis) {
                 case VOFA_AXIS_PITCH:
                     vofa[0] = 0.0f;
-                    vofa[1] = pitch_rad;
+                    vofa[1] = pitch_deg;
                     vofa[2] = ep;
                     vofa[3] = pitch_angle_rate_sp;
-                    vofa[4] = g_shared_sensor.gyro_dps[1] * DEG_TO_RAD;
+                    vofa[4] = g_shared_sensor.gyro_dps[1];
                     vofa[5] = out_pitch;
                     vofa[6] = ((pwm3 + pwm4) - (pwm1 + pwm2)) * 0.5f;
                     vofa[7] = throttle_avg;
@@ -942,10 +874,10 @@ int main(void)
 
                 case VOFA_AXIS_YAW:
                     vofa[0] = 0.0f;
-                    vofa[1] = yaw_rad;
+                    vofa[1] = yaw_deg;
                     vofa[2] = ey;
                     vofa[3] = yaw_angle_rate_sp;
-                    vofa[4] = g_shared_sensor.gyro_dps[2] * DEG_TO_RAD;
+                    vofa[4] = g_shared_sensor.gyro_dps[2];
                     vofa[5] = out_yaw;
                     vofa[6] = ((pwm1 + pwm3) - (pwm2 + pwm4)) * 0.5f;
                     vofa[7] = throttle_avg;
@@ -954,10 +886,10 @@ int main(void)
                 case VOFA_AXIS_ROLL:
                 default:
                     vofa[0] = 0.0f;
-                    vofa[1] = roll_rad;
+                    vofa[1] = roll_deg;
                     vofa[2] = er;
                     vofa[3] = roll_angle_rate_sp;
-                    vofa[4] = g_shared_sensor.gyro_dps[0] * DEG_TO_RAD;
+                    vofa[4] = g_shared_sensor.gyro_dps[0];
                     vofa[5] = out_roll;
                     vofa[6] = ((pwm1 + pwm4) - (pwm2 + pwm3)) * 0.5f;
                     vofa[7] = throttle_avg;

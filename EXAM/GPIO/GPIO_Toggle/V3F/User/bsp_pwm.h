@@ -17,8 +17,8 @@
  *      高电平 2000us = 最高油门（满转）
  *    周期内剩余时间为低电平，电调不关心其长短。
  *
- * 3. 输出频率：200Hz（周期 5000us）
- *    逐飞电调固件支持 50~300Hz，200Hz 为推荐值（响应快，兼容性好）。
+ * 3. 输出频率：150Hz（周期 6667us），与 PID 内环频率同步。
+ *    逐飞电调固件支持 50~300Hz。
  *
  * 4. 脉宽单位统一为 us（微秒），TIM4 计数时钟 1MHz，CCR = 脉宽 us。
  */
@@ -28,14 +28,14 @@
 
 /*
  * PWM 基本参数：
- * - PWM_PERIOD_US = 5000us，对应 200Hz（逐飞电调固件支持 50~300Hz，200Hz 推荐）
+ * - PWM_PERIOD_US = 6667us，对应 150Hz，与 PID 内环 TIM2 同步
  * - PWM_MIN_PULSE_US = 1000us，高电平 1ms = 最低油门（停转）
  * - PWM_MAX_PULSE_US = 2000us，高电平 2ms = 最高油门（满转）
  *
  * 注意：电调只关心高电平脉宽，与周期长短无关。
  *       TIM4 计数时钟 1MHz，CCR 值直接等于脉宽微秒数。
  */
-#define PWM_PERIOD_US                5000U
+#define PWM_PERIOD_US                6667U
 #define PWM_MIN_PULSE_US             1000U
 #define PWM_MAX_PULSE_US             2000U
 

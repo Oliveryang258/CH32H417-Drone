@@ -194,16 +194,12 @@ void PWM_TestSequence(void)
 
     if(PWM_Arm() != PWM_OK)
     {
-        printf("[PWM] arm failed\r\n");
         PWM_EmergencyStop();
         return;
     }
 
-    printf("[PWM] armed, starting safe 4-channel test\r\n");
-
     for(motor = PWM_MOTOR1; motor <= PWM_MOTOR4; motor++)
     {
-        printf("[PWM] motor %u ramp to %u us\r\n", motor, PWM_TEST_PULSE_US);
         PWM_RampTo(motor, PWM_TEST_PULSE_US, PWM_TEST_STEP_US, PWM_TEST_STEP_DELAY_MS);
         Delay_Ms(1000);
         PWM_RampTo(motor, PWM_MIN_PULSE_US, PWM_TEST_STEP_US, PWM_TEST_STEP_DELAY_MS);
@@ -211,7 +207,6 @@ void PWM_TestSequence(void)
     }
 
     PWM_Lock();
-    printf("[PWM] test finished, locked\r\n");
 }
 
 /*
@@ -283,10 +278,10 @@ static void PWM_TIM4_Init(uint16_t period_us)
     TIM_OC4Init(PWM_TIM, &tim_oc_init);
 
     /* 第八步：配置预装载。 */
-    TIM_OC1PreloadConfig(PWM_TIM, TIM_OCPreload_Disable);
-    TIM_OC2PreloadConfig(PWM_TIM, TIM_OCPreload_Disable);
-    TIM_OC3PreloadConfig(PWM_TIM, TIM_OCPreload_Disable);
-    TIM_OC4PreloadConfig(PWM_TIM, TIM_OCPreload_Disable);
+    TIM_OC1PreloadConfig(PWM_TIM, TIM_OCPreload_Enable);
+    TIM_OC2PreloadConfig(PWM_TIM, TIM_OCPreload_Enable);
+    TIM_OC3PreloadConfig(PWM_TIM, TIM_OCPreload_Enable);
+    TIM_OC4PreloadConfig(PWM_TIM, TIM_OCPreload_Enable);
     TIM_ARRPreloadConfig(PWM_TIM, ENABLE);
 
     /* 第九步：启动 TIM4。 */

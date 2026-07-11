@@ -34,6 +34,31 @@ static float JY61P_ConvertAccel(int16_t raw_value);
 static float JY61P_ConvertGyro(int16_t raw_value);
 static float JY61P_ConvertAngle(int16_t raw_value);
 
+static void JY61P_SendCommand(const uint8_t cmd[5])
+{
+    uint8_t i;
+
+    for (i = 0U; i < 5U; i++) {
+        while (USART_GetFlagStatus(IMU_USART, USART_FLAG_TXE) == RESET) {
+        }
+        USART_SendData(IMU_USART, cmd[i]);
+    }
+    while (USART_GetFlagStatus(IMU_USART, USART_FLAG_TC) == RESET) {
+    }
+}
+
+static void JY61P_EnableFlightOutputs(void)
+{
+    static const uint8_t unlock_cmd[5] = {0xFFU, 0xAAU, 0x69U, 0x88U, 0xB5U};
+    static const uint8_t output_cmd[5] = {0xFFU, 0xAAU, 0x02U, 0x0EU, 0x00U};
+
+    Delay_Ms(100U);
+    JY61P_SendCommand(unlock_cmd);
+    Delay_Ms(10U);
+    JY61P_SendCommand(output_cmd);
+    Delay_Ms(10U);
+}
+
 /**
  * @brief  初始化 JY61P 所使用的 USART4 和对应 GPIO。
  *
@@ -62,6 +87,9 @@ void IMU_Init(void)
     s_imu_debug.fe_count = 0U;
     s_imu_debug.pe_count = 0U;
     s_imu_debug.err_byte_count = 0U;
+    s_imu_debug.accel_frame_count = 0U;
+    s_imu_debug.gyro_frame_count = 0U;
+    s_imu_debug.angle_frame_count = 0U;
     s_imu_debug.last_statr = 0U;
     s_imu_debug.last_rx_byte = 0U;
 
@@ -93,6 +121,7 @@ void IMU_Init(void)
     USART_ITConfig(IMU_USART, USART_IT_RXNE, ENABLE);
     NVIC_EnableIRQ(IMU_USART_IRQn);
     USART_Cmd(IMU_USART, ENABLE);
+    JY61P_EnableFlightOutputs();
 }
 
 /**
@@ -263,6 +292,9 @@ static void JY61P_ParseFrame(const uint8_t *frame)
             s_imu_data.accel_g[0] = JY61P_ConvertAccel(raw_x);
             s_imu_data.accel_g[1] = JY61P_ConvertAccel(raw_y);
             s_imu_data.accel_g[2] = JY61P_ConvertAccel(raw_z);
+            s_imu_data.frame_updated = frame[1];
+            s_imu_data_ready = 1U;
+            s_imu_debug.accel_frame_count++;
             break;
 
         case JY61P_FRAME_GYRO:
@@ -274,6 +306,7 @@ static void JY61P_ParseFrame(const uint8_t *frame)
             s_imu_data.gyro_dps[2] = JY61P_ConvertGyro(raw_z);
             s_imu_data.frame_updated = frame[1];
             s_imu_data_ready = 1U;
+            s_imu_debug.gyro_frame_count++;
             break;
 
         case JY61P_FRAME_ANGLE:
@@ -285,6 +318,7 @@ static void JY61P_ParseFrame(const uint8_t *frame)
             s_imu_data.angle_deg[2] = JY61P_ConvertAngle(raw_z);
             s_imu_data.frame_updated = frame[1];
             s_imu_data_ready = 1U;
+            s_imu_debug.angle_frame_count++;
             break;
 
         default:

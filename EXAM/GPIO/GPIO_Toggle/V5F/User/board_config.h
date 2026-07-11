@@ -3,6 +3,12 @@
 
 #include "ch32h417_conf.h"
 
+/* Flight firmware uses binary telemetry only. Never block on formatted UART logs. */
+#ifdef printf
+#undef printf
+#endif
+#define printf(...) ((void)0)
+
 // MOTOR TIM4 
 #define MOTOR_PORT             GPIOD
 #define MOTOR1_PIN             GPIO_Pin_12 // TIM4_CH1

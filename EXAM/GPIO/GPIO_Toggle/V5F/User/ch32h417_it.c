@@ -15,8 +15,11 @@
 #include "bsp_lf.h"
 #include "bsp_tof.h"
 
+extern void XYKF_TickISR(void);
+
 void NMI_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void HardFault_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART4_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART5_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -65,6 +68,12 @@ void HardFault_Handler(void)
   while (1)
   {
   }
+}
+
+void TIM3_IRQHandler(void)
+{
+  TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+  XYKF_TickISR();
 }
 
 /*********************************************************************

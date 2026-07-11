@@ -45,6 +45,9 @@ typedef struct
     uint32_t fe_count;
     uint32_t pe_count;
     uint32_t err_byte_count;
+    uint32_t accel_frame_count;
+    uint32_t gyro_frame_count;
+    uint32_t angle_frame_count;
     uint16_t last_statr;
     uint8_t  last_rx_byte;
 } IMU_DebugInfo_t;

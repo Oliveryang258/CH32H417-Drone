@@ -27,15 +27,20 @@
 #define XYKF_RATE_HZ                200U
 #define XYKF_DT                     (1.0f / (float)XYKF_RATE_HZ)
 #define XYKF_FLOW_MIN_QUALITY       150U
-#define XYKF_OF0_RAW_SCALE          0.035f
-#define XYKF_OF0_KXX                1.0f
-#define XYKF_OF0_KXY                0.0f
-#define XYKF_OF0_KYX                0.0f
-#define XYKF_OF0_KYY                1.0f
+#define XYKF_OF0_RAW_SCALE          0.0823f
+/* OF0 was measured as raw X=lateral/Roll and raw Y=forward/Pitch. Keep that
+ * installation mapping separate from the standard body forward/right axes. */
+#define XYKF_OF0_FORWARD_DX         0.0f
+#define XYKF_OF0_FORWARD_DY         1.0f
+#define XYKF_OF0_RIGHT_DX           1.0f
+#define XYKF_OF0_RIGHT_DY           0.0f
+#define XYKF_OF0_SAMPLE_DT          0.005f  /* Anonymous OF0 is configured for 200 Hz. */
+#define XYKF_RANGE_MIN_CM           5U
+#define XYKF_RANGE_MAX_CM           400U
 #define XYKF_FLOW_OBS_LIMIT_CMPS    200.0f
 #define XYKF_ACCEL_LIMIT_CMPS2      300.0f
 #define XYKF_ACCEL_DEADBAND_CMPS2   12.0f
-#define XYKF_ACCEL_PREDICT_WEIGHT   0.35f
+#define XYKF_ACCEL_PREDICT_WEIGHT   1.0f
 #define XYKF_FLOW_INNOV_LIMIT_CMPS  60.0f
 #define XYKF_FLOW_CORR_GOOD         0.45f
 #define XYKF_FLOW_CORR_MID          0.25f
@@ -48,6 +53,15 @@
 #define XYKF_FLOW_COAST_TICKS       20U
 #define XYKF_FLOW_STOP_TICKS        60U
 #define XYKF_FLOW_LOST_VEL_DECAY    0.95f
+#define XYKF_FLOW_RECENT_TICKS      20U   /* Hold diagnostic valid state for 100 ms. */
+#define XYKF_IMU_STALE_TICKS        20U
+#define XYKF_RANGE_STALE_TICKS      40U
+#define XYKF_DIAG_FLOW_TIMEOUT      20U
+#define XYKF_DIAG_QUALITY_LOW       21U
+#define XYKF_DIAG_FLOW_INVALID      22U
+#define XYKF_DIAG_RANGE_INVALID     23U
+#define XYKF_DIAG_RANGE_TOO_LOW     24U
+#define XYKF_DIAG_RANGE_TOO_HIGH    25U
 #define BRINGUP_LINK_CHANNEL        40U     /* 必须与遥控器一致 */
 
 /*
@@ -138,6 +152,19 @@ static float s_xykf_calib_sum_x = 0.0f;
 static float s_xykf_calib_sum_y = 0.0f;
 static uint8_t s_xykf_calibrated = 0U;
 static uint16_t s_xykf_no_flow_ticks = 0U;
+static uint16_t s_xykf_flow_recent_ticks = 0U;
+static float s_xykf_last_obs_x = 0.0f;
+static float s_xykf_last_obs_y = 0.0f;
+static uint32_t s_xykf_tick = 0UL;
+static uint32_t s_xykf_seen_accel_count = 0UL;
+static uint32_t s_xykf_seen_gyro_count = 0UL;
+static uint32_t s_xykf_last_accel_tick = 0UL;
+static uint32_t s_xykf_last_gyro_tick = 0UL;
+static uint32_t s_xykf_seen_range_marker = 0UL;
+static uint32_t s_xykf_last_range_tick = 0UL;
+static uint32_t s_xykf_seen_vendor_count = 0UL;
+static uint32_t s_xykf_last_vendor_tick = 0UL;
+static uint8_t s_xykf_source_prev = 2U;
 
 static void XYKF_AxisInit(XYKF_Axis_t *kf)
 {
@@ -159,7 +186,7 @@ static float XYKF_Clamp(float x, float lo, float hi)
 
 static void XYKF_AxisPredict(XYKF_Axis_t *kf, float acc_cmps2)
 {
-    float acc = XYKF_Clamp(acc_cmps2 - kf->b,
+    float acc = XYKF_Clamp(acc_cmps2,
                            -XYKF_ACCEL_LIMIT_CMPS2,
                            XYKF_ACCEL_LIMIT_CMPS2);
     if (acc > XYKF_ACCEL_DEADBAND_CMPS2) {
@@ -190,6 +217,19 @@ static void XYKF_Init(void)
     s_xykf_calib_sum_y = 0.0f;
     s_xykf_calibrated = 0U;
     s_xykf_no_flow_ticks = 0U;
+    s_xykf_flow_recent_ticks = 0U;
+    s_xykf_last_obs_x = 0.0f;
+    s_xykf_last_obs_y = 0.0f;
+    s_xykf_tick = 0UL;
+    s_xykf_seen_accel_count = 0UL;
+    s_xykf_seen_gyro_count = 0UL;
+    s_xykf_last_accel_tick = 0UL;
+    s_xykf_last_gyro_tick = 0UL;
+    s_xykf_seen_range_marker = 0UL;
+    s_xykf_last_range_tick = 0UL;
+    s_xykf_seen_vendor_count = 0UL;
+    s_xykf_last_vendor_tick = 0UL;
+    s_xykf_source_prev = 2U;
 }
 
 static void XYKF_TimerInit(void)
@@ -225,16 +265,52 @@ void XYKF_TickISR(void)
     float ax = g_shared_sensor.accel_g[0];
     float ay = g_shared_sensor.accel_g[1];
     float az = g_shared_sensor.accel_g[2];
-    float acc_level_x = (cp * ax + sr * sp * ay + cr * sp * az) * 981.0f;
-    float acc_level_y = (cr * ay - sr * az) * 981.0f;
-    float acc_earth_x = cy * acc_level_x - sy * acc_level_y;
-    float acc_earth_y = sy * acc_level_x + cy * acc_level_y;
-    float obs_earth_x = 0.0f;
-    float obs_earth_y = 0.0f;
+    float acc_level_forward = (cp * ax + sr * sp * ay + cr * sp * az) * 981.0f;
+    float acc_level_right = (cr * ay - sr * az) * 981.0f;
+    float acc_forward = acc_level_forward - s_xkf.b;
+    float acc_right = acc_level_right - s_ykf.b;
+    float acc_earth_x = cy * acc_forward - sy * acc_right;
+    float acc_earth_y = sy * acc_forward + cy * acc_right;
+    float obs_earth_x = s_xykf_last_obs_x;
+    float obs_earth_y = s_xykf_last_obs_y;
     float gyro_max = fabsf(g_shared_sensor.gyro_dps[0]);
     float accel_norm = sqrtf(ax * ax + ay * ay + az * az);
     uint8_t flags = 0U;
     uint8_t flow_corrected = 0U;
+    uint8_t imu_recent;
+    uint8_t range_recent;
+
+    s_xykf_tick++;
+    if (g_shared_sensor.flow_sample_count != s_xykf_seen_vendor_count) {
+        s_xykf_seen_vendor_count = g_shared_sensor.flow_sample_count;
+        s_xykf_last_vendor_tick = s_xykf_tick;
+    }
+    if (g_shared_sensor.flow_source_select != s_xykf_source_prev) {
+        s_xykf_source_prev = g_shared_sensor.flow_source_select;
+        XYKF_AxisInit(&s_xkf);
+        XYKF_AxisInit(&s_ykf);
+        s_xykf_calib_count = 0U;
+        s_xykf_calib_sum_x = 0.0f;
+        s_xykf_calib_sum_y = 0.0f;
+        s_xykf_calibrated = 0U;
+        s_xykf_no_flow_ticks = 0U;
+        s_xykf_flow_recent_ticks = 0U;
+    }
+    if (imu_dbg->accel_frame_count != s_xykf_seen_accel_count) {
+        s_xykf_seen_accel_count = imu_dbg->accel_frame_count;
+        s_xykf_last_accel_tick = s_xykf_tick;
+    }
+    if (imu_dbg->gyro_frame_count != s_xykf_seen_gyro_count) {
+        s_xykf_seen_gyro_count = imu_dbg->gyro_frame_count;
+        s_xykf_last_gyro_tick = s_xykf_tick;
+    }
+    if (g_shared_sensor.lf_range_update_tick != s_xykf_seen_range_marker) {
+        s_xykf_seen_range_marker = g_shared_sensor.lf_range_update_tick;
+        s_xykf_last_range_tick = s_xykf_tick;
+    }
+    imu_recent = ((s_xykf_tick - s_xykf_last_accel_tick) <= XYKF_IMU_STALE_TICKS &&
+                  (s_xykf_tick - s_xykf_last_gyro_tick) <= XYKF_IMU_STALE_TICKS) ? 1U : 0U;
+    range_recent = ((s_xykf_tick - s_xykf_last_range_tick) <= XYKF_RANGE_STALE_TICKS) ? 1U : 0U;
 
     if (fabsf(g_shared_sensor.gyro_dps[1]) > gyro_max) {
         gyro_max = fabsf(g_shared_sensor.gyro_dps[1]);
@@ -243,8 +319,13 @@ void XYKF_TickISR(void)
         gyro_max = fabsf(g_shared_sensor.gyro_dps[2]);
     }
 
+    if (g_shared_sensor.flow_source_select == 2U) {
+        goto xykf_publish;
+    }
+
     if ((imu_dbg->accel_frame_count == 0UL) ||
-        (imu_dbg->gyro_frame_count == 0UL)) {
+        (imu_dbg->gyro_frame_count == 0UL) ||
+        (imu_recent == 0U)) {
         flags |= 0x80U;
         s_xykf_calib_count = 0U;
         s_xykf_calib_sum_x = 0.0f;
@@ -259,8 +340,9 @@ void XYKF_TickISR(void)
             (fabsf(g_shared_sensor.roll) <= XYKF_CALIB_MAX_TILT_DEG) &&
             (fabsf(g_shared_sensor.pitch) <= XYKF_CALIB_MAX_TILT_DEG) &&
             (gyro_max <= XYKF_CALIB_MAX_GYRO_DPS)) {
-            s_xykf_calib_sum_x += acc_earth_x;
-            s_xykf_calib_sum_y += acc_earth_y;
+            /* Bias belongs to the leveled body frame, not the earth frame. */
+            s_xykf_calib_sum_x += acc_level_forward;
+            s_xykf_calib_sum_y += acc_level_right;
             s_xykf_calib_count++;
             if (s_xykf_calib_count >= XYKF_CALIB_SAMPLES) {
                 s_xkf.b = s_xykf_calib_sum_x / (float)s_xykf_calib_count;
@@ -284,40 +366,46 @@ void XYKF_TickISR(void)
     }
 
     if ((s_xykf_calibrated != 0U) &&
+        (imu_recent != 0U) &&
+        (g_shared_sensor.flow_mode == LF_FLOW_MODE_RAW) &&
         (g_shared_sensor.flow_valid != 0U) &&
         (g_shared_sensor.flow_quality >= XYKF_FLOW_MIN_QUALITY) &&
         (g_shared_sensor.flow_update_tick != s_xykf_seen_flow_tick)) {
         float corr_gain = (g_shared_sensor.flow_quality >= 220U) ?
                           XYKF_FLOW_CORR_GOOD : XYKF_FLOW_CORR_MID;
-        float flow_body_x;
-        float flow_body_y;
+        float flow_forward;
+        float flow_right;
         float height_cm = 0.0f;
         float flow_earth_x;
         float flow_earth_y;
 
-        if (g_shared_sensor.lf_range_valid &&
-            g_shared_sensor.lf_range_distance_cm >= 5U &&
-            g_shared_sensor.lf_range_distance_cm <= 200U) {
-            height_cm = (float)g_shared_sensor.lf_range_distance_cm;
+        if (range_recent && g_shared_sensor.lf_range_valid &&
+            g_shared_sensor.lf_range_distance_cm >= XYKF_RANGE_MIN_CM &&
+            g_shared_sensor.lf_range_distance_cm <= XYKF_RANGE_MAX_CM) {
+            /* The range sensor measures along its tilted optical axis. */
+            height_cm = (float)g_shared_sensor.lf_range_distance_cm * cr * cp;
         }
 
         if (height_cm > 0.0f) {
             float raw_dx = (float)g_shared_sensor.flow_dx_raw;
             float raw_dy = (float)g_shared_sensor.flow_dy_raw;
-            flow_body_x = (XYKF_OF0_KXX * raw_dx + XYKF_OF0_KXY * raw_dy) *
-                          height_cm * XYKF_OF0_RAW_SCALE;
-            flow_body_y = (XYKF_OF0_KYX * raw_dx + XYKF_OF0_KYY * raw_dy) *
-                          height_cm * XYKF_OF0_RAW_SCALE;
-            flow_body_x = XYKF_Clamp(flow_body_x, -XYKF_FLOW_OBS_LIMIT_CMPS, XYKF_FLOW_OBS_LIMIT_CMPS);
-            flow_body_y = XYKF_Clamp(flow_body_y, -XYKF_FLOW_OBS_LIMIT_CMPS, XYKF_FLOW_OBS_LIMIT_CMPS);
-            flow_earth_x = cy * flow_body_x - sy * flow_body_y;
-            flow_earth_y = sy * flow_body_x + cy * flow_body_y;
+            flow_forward = (XYKF_OF0_FORWARD_DX * raw_dx + XYKF_OF0_FORWARD_DY * raw_dy) *
+                           height_cm * XYKF_OF0_RAW_SCALE;
+            flow_right = (XYKF_OF0_RIGHT_DX * raw_dx + XYKF_OF0_RIGHT_DY * raw_dy) *
+                         height_cm * XYKF_OF0_RAW_SCALE;
+            flow_forward = XYKF_Clamp(flow_forward, -XYKF_FLOW_OBS_LIMIT_CMPS, XYKF_FLOW_OBS_LIMIT_CMPS);
+            flow_right = XYKF_Clamp(flow_right, -XYKF_FLOW_OBS_LIMIT_CMPS, XYKF_FLOW_OBS_LIMIT_CMPS);
+            flow_earth_x = cy * flow_forward - sy * flow_right;
+            flow_earth_y = sy * flow_forward + cy * flow_right;
             flags |= 0x02U;
 
             XYKF_AxisCorrectVel(&s_xkf, flow_earth_x, corr_gain);
             XYKF_AxisCorrectVel(&s_ykf, flow_earth_y, corr_gain);
             obs_earth_x = flow_earth_x;
             obs_earth_y = flow_earth_y;
+            s_xykf_last_obs_x = flow_earth_x;
+            s_xykf_last_obs_y = flow_earth_y;
+            s_xykf_flow_recent_ticks = XYKF_FLOW_RECENT_TICKS;
             flags |= 0x01U;
             flow_corrected = 1U;
 
@@ -326,8 +414,8 @@ void XYKF_TickISR(void)
                 (g_shared_sensor.flow_dy_raw >= -1) &&
                 (g_shared_sensor.flow_dy_raw <= 1) &&
                 (gyro_max <= XYKF_STILL_MAX_GYRO_DPS) &&
-                (fabsf(acc_earth_x - s_xkf.b) <= XYKF_STILL_MAX_ACCEL_CMPS2) &&
-                (fabsf(acc_earth_y - s_ykf.b) <= XYKF_STILL_MAX_ACCEL_CMPS2)) {
+                (fabsf(acc_earth_x) <= XYKF_STILL_MAX_ACCEL_CMPS2) &&
+                (fabsf(acc_earth_y) <= XYKF_STILL_MAX_ACCEL_CMPS2)) {
                 s_xkf.v *= XYKF_STILL_VEL_DECAY;
                 s_ykf.v *= XYKF_STILL_VEL_DECAY;
                 if (fabsf(s_xkf.v) < 0.5f) s_xkf.v = 0.0f;
@@ -339,11 +427,16 @@ void XYKF_TickISR(void)
     }
 
     if (s_xykf_calibrated != 0U) {
-        if ((g_shared_sensor.lf_range_valid != 0U) &&
-            (g_shared_sensor.lf_range_distance_cm < 5U)) {
+        if (range_recent && (g_shared_sensor.lf_range_valid != 0U) &&
+            (g_shared_sensor.lf_range_distance_cm < XYKF_RANGE_MIN_CM)) {
             s_xkf.v = 0.0f;
             s_ykf.v = 0.0f;
             s_xykf_no_flow_ticks = XYKF_FLOW_STOP_TICKS;
+            s_xykf_flow_recent_ticks = 0U;
+            s_xykf_last_obs_x = 0.0f;
+            s_xykf_last_obs_y = 0.0f;
+            obs_earth_x = 0.0f;
+            obs_earth_y = 0.0f;
             flags |= 0x18U;
         } else if (flow_corrected != 0U) {
             s_xykf_no_flow_ticks = 0U;
@@ -359,22 +452,72 @@ void XYKF_TickISR(void)
             if (s_xykf_no_flow_ticks >= XYKF_FLOW_STOP_TICKS) {
                 s_xkf.v = 0.0f;
                 s_ykf.v = 0.0f;
+                s_xykf_flow_recent_ticks = 0U;
+                s_xykf_last_obs_x = 0.0f;
+                s_xykf_last_obs_y = 0.0f;
+                obs_earth_x = 0.0f;
+                obs_earth_y = 0.0f;
                 flags |= 0x10U;
             }
         }
+
+        if (s_xykf_flow_recent_ticks > 0U) {
+            s_xykf_flow_recent_ticks--;
+            flags |= 0x20U;
+        }
         s_xkf.p += s_xkf.v * XYKF_DT;
         s_ykf.p += s_ykf.v * XYKF_DT;
+
+        /* Once protection stops velocity, report the exact rejected input on I7. */
+        if (range_recent && (g_shared_sensor.lf_range_valid != 0U) &&
+            (g_shared_sensor.lf_range_distance_cm < XYKF_RANGE_MIN_CM)) {
+            flags = XYKF_DIAG_RANGE_TOO_LOW;
+        } else if (s_xykf_no_flow_ticks >= XYKF_FLOW_STOP_TICKS) {
+            if (g_shared_sensor.flow_valid == 0U) {
+                flags = XYKF_DIAG_FLOW_INVALID;
+            } else if (g_shared_sensor.flow_quality < XYKF_FLOW_MIN_QUALITY) {
+                flags = XYKF_DIAG_QUALITY_LOW;
+            } else if ((range_recent == 0U) || (g_shared_sensor.lf_range_valid == 0U)) {
+                flags = XYKF_DIAG_RANGE_INVALID;
+            } else if (g_shared_sensor.lf_range_distance_cm > XYKF_RANGE_MAX_CM) {
+                flags = XYKF_DIAG_RANGE_TOO_HIGH;
+            } else {
+                flags = XYKF_DIAG_FLOW_TIMEOUT;
+            }
+        }
     }
 
-    g_shared_sensor.ekf_px_cm = s_xkf.p;
-    g_shared_sensor.ekf_py_cm = s_ykf.p;
-    g_shared_sensor.ekf_vx_cmps = s_xkf.v;
-    g_shared_sensor.ekf_vy_cmps = s_ykf.v;
+xykf_publish:
+    if (g_shared_sensor.flow_source_select == 2U) {
+        uint8_t of2_recent = ((s_xykf_tick - s_xykf_last_vendor_tick) <=
+                              XYKF_FLOW_RECENT_TICKS) ? 1U : 0U;
+        uint8_t of2_valid = (g_shared_sensor.flow_mode == LF_FLOW_MODE_FUSION &&
+                             g_shared_sensor.flow_valid != 0U &&
+                             g_shared_sensor.flow_quality >= XYKF_FLOW_MIN_QUALITY &&
+                             of2_recent != 0U) ? 1U : 0U;
+
+        g_shared_sensor.flow_source_active = 2U;
+        g_shared_sensor.ekf_px_cm = (float)g_shared_sensor.flow_integ_x_cm;
+        g_shared_sensor.ekf_py_cm = (float)g_shared_sensor.flow_integ_y_cm;
+        g_shared_sensor.ekf_vx_cmps = of2_valid ?
+                                      (float)g_shared_sensor.flow_dx_fix_cmps : 0.0f;
+        g_shared_sensor.ekf_vy_cmps = of2_valid ?
+                                      (float)g_shared_sensor.flow_dy_fix_cmps : 0.0f;
+        g_shared_sensor.ekf_flags = of2_valid ? 0x21U : 0U;
+        g_shared_sensor.ekf_vx_obs_cmps = (float)g_shared_sensor.flow_dx_fix_cmps;
+        g_shared_sensor.ekf_vy_obs_cmps = (float)g_shared_sensor.flow_dy_fix_cmps;
+    } else {
+        g_shared_sensor.flow_source_active = 0U;
+        g_shared_sensor.ekf_px_cm = s_xkf.p;
+        g_shared_sensor.ekf_py_cm = s_ykf.p;
+        g_shared_sensor.ekf_vx_cmps = s_xkf.v;
+        g_shared_sensor.ekf_vy_cmps = s_ykf.v;
+        g_shared_sensor.ekf_flags = flags;
+        g_shared_sensor.ekf_vx_obs_cmps = obs_earth_x;
+        g_shared_sensor.ekf_vy_obs_cmps = obs_earth_y;
+    }
     g_shared_sensor.ekf_bax_cmps2 = s_xkf.b;
     g_shared_sensor.ekf_bay_cmps2 = s_ykf.b;
-    g_shared_sensor.ekf_flags = flags;
-    g_shared_sensor.ekf_vx_obs_cmps = obs_earth_x;
-    g_shared_sensor.ekf_vy_obs_cmps = obs_earth_y;
     g_shared_sensor.ekf_update_tick++;
 }
 
@@ -721,6 +864,19 @@ static void Bringup_Run(void)
     g_shared_sensor.ekf_flags         = 0U;
     g_shared_sensor.ekf_vx_obs_cmps   = 0.0f;
     g_shared_sensor.ekf_vy_obs_cmps   = 0.0f;
+    g_shared_sensor.flow_mode          = LF_FLOW_MODE_RAW;
+    g_shared_sensor.flow_sample_count  = 0UL;
+    g_shared_sensor.flow_source_select = 2U;
+    g_shared_sensor.flow_source_active = 2U;
+    g_shared_sensor.lf_range_update_tick = 0UL;
+    g_shared_sensor.lf_dbg_irq_count = 0UL;
+    g_shared_sensor.lf_dbg_rx_byte_count = 0UL;
+    g_shared_sensor.lf_dbg_frame_ok_count = 0UL;
+    g_shared_sensor.lf_dbg_checksum_error_count = 0UL;
+    g_shared_sensor.lf_dbg_len_error_count = 0UL;
+    g_shared_sensor.lf_dbg_last_frame_id = 0U;
+    g_shared_sensor.lf_dbg_last_frame_len = 0U;
+    g_shared_sensor.lf_dbg_last_rx_byte = 0U;
     printf("\r\n==== V5F Bringup Test ====\r\n");
 
     /* IMU */
@@ -796,11 +952,24 @@ static void Bringup_Run(void)
             g_shared_sensor.accel_g[1]  = imu->accel_g[1];
             g_shared_sensor.accel_g[2]  = imu->accel_g[2];
         }
+        {
+            const LF_DebugInfo_t *lf_dbg = LF_GetDebugInfo();
+            g_shared_sensor.lf_dbg_irq_count = lf_dbg->irq_count;
+            g_shared_sensor.lf_dbg_rx_byte_count = lf_dbg->rx_byte_count;
+            g_shared_sensor.lf_dbg_frame_ok_count = lf_dbg->frame_ok_count;
+            g_shared_sensor.lf_dbg_checksum_error_count = lf_dbg->checksum_error_count;
+            g_shared_sensor.lf_dbg_len_error_count = lf_dbg->len_error_count;
+            g_shared_sensor.lf_dbg_last_frame_id = lf_dbg->last_frame_id;
+            g_shared_sensor.lf_dbg_last_frame_len = lf_dbg->last_frame_len;
+            g_shared_sensor.lf_dbg_last_rx_byte = lf_dbg->last_rx_byte;
+        }
         if (LF_DataReady())
         {
             const LF_Data_t *lf = LF_GetData();
             if (lf->frame_updated == LF_FRAME_ID_FLOW)
             {
+                g_shared_sensor.flow_mode        = lf->flow_mode;
+                g_shared_sensor.flow_sample_count++;
                 g_shared_sensor.flow_dx_cmps     = lf->flow_dx_cmps;
                 g_shared_sensor.flow_dy_cmps     = lf->flow_dy_cmps;
                 g_shared_sensor.flow_dx_fix_cmps = lf->flow_dx_fix_cmps;
@@ -815,17 +984,17 @@ static void Bringup_Run(void)
                 g_shared_sensor.flow_dx_raw      = lf->flow_dx_raw;
                 g_shared_sensor.flow_dy_raw      = lf->flow_dy_raw;
             }
-            if ((lf->range_valid != 0U) &&
-                (lf->range_distance_cm != LF_RANGE_INVALID_CM) &&
-                (lf->range_distance_cm <= 0xFFFEUL))
-            {
-                g_shared_sensor.lf_range_distance_cm = (uint16_t)lf->range_distance_cm;
-                g_shared_sensor.lf_range_valid = 1U;
-            }
-            else if (lf->frame_updated == LF_FRAME_ID_RANGE)
-            {
-                g_shared_sensor.lf_range_distance_cm = 0xFFFFU;
-                g_shared_sensor.lf_range_valid = 0U;
+            if (lf->frame_updated == LF_FRAME_ID_RANGE) {
+                if ((lf->range_valid != 0U) &&
+                    (lf->range_distance_cm != LF_RANGE_INVALID_CM) &&
+                    (lf->range_distance_cm <= 0xFFFEUL)) {
+                    g_shared_sensor.lf_range_distance_cm = (uint16_t)lf->range_distance_cm;
+                    g_shared_sensor.lf_range_valid = 1U;
+                } else {
+                    g_shared_sensor.lf_range_distance_cm = 0xFFFFU;
+                    g_shared_sensor.lf_range_valid = 0U;
+                }
+                g_shared_sensor.lf_range_update_tick = g_shared_sensor.update_tick;
             }
             LF_ClearDataReady();
         }

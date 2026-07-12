@@ -788,8 +788,8 @@ static void LF_DecodeFrame(const uint8_t *frame)
     data_len = frame[3];
 
     s_lf_data.last_frame_id = frame_id;
-    s_lf_data.frame_updated = frame_id;
-    s_lf_data_ready = 1U;
+    s_lf_data.frame_updated = 0U;
+    s_lf_data_ready = 0U;
 
     switch(frame_id)
     {
@@ -797,19 +797,23 @@ static void LF_DecodeFrame(const uint8_t *frame)
             s_lf_data.flow_mode = data[0];
             s_lf_data.flow_state = data[1];
 
-            if((s_lf_data.flow_mode == LF_FLOW_MODE_RAW) && (data_len == 5U))
+            if((s_lf_data.flow_mode == LF_FLOW_MODE_RAW) && (data_len >= 5U))
             {
                 s_lf_data.flow_dx_raw = (int8_t)data[2];
                 s_lf_data.flow_dy_raw = (int8_t)data[3];
                 s_lf_data.flow_quality = data[4];
+                s_lf_data.frame_updated = frame_id;
+                s_lf_data_ready = 1U;
             }
-            else if((s_lf_data.flow_mode == LF_FLOW_MODE_DECOUPLED) && (data_len == 7U))
+            else if((s_lf_data.flow_mode == LF_FLOW_MODE_DECOUPLED) && (data_len >= 7U))
             {
                 s_lf_data.flow_dx_cmps = LF_ReadS16LE(&data[2]);
                 s_lf_data.flow_dy_cmps = LF_ReadS16LE(&data[4]);
                 s_lf_data.flow_quality = data[6];
+                s_lf_data.frame_updated = frame_id;
+                s_lf_data_ready = 1U;
             }
-            else if((s_lf_data.flow_mode == LF_FLOW_MODE_FUSION) && (data_len == 15U))
+            else if((s_lf_data.flow_mode == LF_FLOW_MODE_FUSION) && (data_len >= 15U))
             {
                 s_lf_data.flow_dx_cmps = LF_ReadS16LE(&data[2]);
                 s_lf_data.flow_dy_cmps = LF_ReadS16LE(&data[4]);
@@ -818,6 +822,8 @@ static void LF_DecodeFrame(const uint8_t *frame)
                 s_lf_data.flow_integ_x_cm = LF_ReadS16LE(&data[10]);
                 s_lf_data.flow_integ_y_cm = LF_ReadS16LE(&data[12]);
                 s_lf_data.flow_quality = data[14];
+                s_lf_data.frame_updated = frame_id;
+                s_lf_data_ready = 1U;
             }
             break;
 
@@ -831,6 +837,8 @@ static void LF_DecodeFrame(const uint8_t *frame)
             {
                 s_lf_debug.range_invalid_count++;
             }
+            s_lf_data.frame_updated = frame_id;
+            s_lf_data_ready = 1U;
             break;
 
         case LF_FRAME_ID_IMU:
@@ -841,6 +849,8 @@ static void LF_DecodeFrame(const uint8_t *frame)
             s_lf_data.gyro_raw[1] = LF_ReadS16LE(&data[8]);
             s_lf_data.gyro_raw[2] = LF_ReadS16LE(&data[10]);
             s_lf_data.shock_state = data[12];
+            s_lf_data.frame_updated = frame_id;
+            s_lf_data_ready = 1U;
             break;
 
         case LF_FRAME_ID_QUAT:
@@ -853,6 +863,8 @@ static void LF_DecodeFrame(const uint8_t *frame)
             s_lf_data.quat[2] = (float)s_lf_data.quat_raw[2] / 10000.0f;
             s_lf_data.quat[3] = (float)s_lf_data.quat_raw[3] / 10000.0f;
             s_lf_data.fusion_state = data[8];
+            s_lf_data.frame_updated = frame_id;
+            s_lf_data_ready = 1U;
             break;
 
         default:

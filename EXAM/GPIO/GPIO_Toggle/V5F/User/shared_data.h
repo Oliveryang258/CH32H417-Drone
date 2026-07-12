@@ -64,17 +64,33 @@ typedef struct
     uint16_t lf_range_distance_cm; /* LF onboard range, cm, 0xFFFF=invalid */
     uint8_t  lf_range_valid;       /* 1=valid, 0=invalid */
     uint8_t  _pad2_;               /* keep 4-byte tail alignment */
+    uint32_t lf_range_update_tick; /* changes only when a range frame arrives */
     float    ekf_px_cm;            /* V5F XY-KF earth X position, cm */
     float    ekf_py_cm;            /* V5F XY-KF earth Y position, cm */
     float    ekf_vx_cmps;          /* V5F XY-KF earth X velocity, cm/s */
     float    ekf_vy_cmps;          /* V5F XY-KF earth Y velocity, cm/s */
-    float    ekf_bax_cmps2;        /* V5F XY-KF earth X accel bias, cm/s^2 */
-    float    ekf_bay_cmps2;        /* V5F XY-KF earth Y accel bias, cm/s^2 */
+    float    ekf_bax_cmps2;        /* leveled body-forward accel bias, cm/s^2 */
+    float    ekf_bay_cmps2;        /* leveled body-right accel bias, cm/s^2 */
     uint32_t ekf_update_tick;      /* increments in V5F XY-KF timer ISR */
     uint8_t  ekf_flags;            /* bit0=flow update used */
     uint8_t  _pad3_[3];            /* keep 4-byte tail alignment */
     float    ekf_vx_obs_cmps;      /* latest XY-KF earth X velocity observation */
     float    ekf_vy_obs_cmps;      /* latest XY-KF earth Y velocity observation */
+    uint8_t  flow_mode;             /* vendor mode: 0=OF0, 1=OF1, 2=OF2 */
+    uint8_t  _pad4_[3];
+    uint32_t flow_sample_count;     /* increments once per decoded flow frame */
+    uint8_t  flow_source_select;    /* V3F request: 0=OF0 fusion, 2=vendor OF2 */
+    uint8_t  flow_source_active;    /* V5F-confirmed active source */
+    uint8_t  _pad5_[2];
+    uint32_t lf_dbg_irq_count;
+    uint32_t lf_dbg_rx_byte_count;
+    uint32_t lf_dbg_frame_ok_count;
+    uint32_t lf_dbg_checksum_error_count;
+    uint32_t lf_dbg_len_error_count;
+    uint8_t  lf_dbg_last_frame_id;
+    uint8_t  lf_dbg_last_frame_len;
+    uint8_t  lf_dbg_last_rx_byte;
+    uint8_t  _pad6_;
 } SharedSensorData_t;
 #pragma pack()
 

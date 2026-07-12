@@ -12,13 +12,17 @@
 /* ---- 调参参数（可通过 VOFA Commander 在线修改�?---- */
 /* 注意：当前全部置 0 用于油门直通测试，
  *       PID 调试架后通过 VOFA Commander �?rp/rd... 命令开�?*/
-volatile float g_kp_roll  = 0.83f;
+volatile float g_kp_roll  = 0.65f;
 volatile float g_ki_roll  = 0.0f;
 volatile float g_kd_roll  = 0.0f;
 
-volatile float g_kp_pitch = 0.83f;
+volatile float g_kp_pitch = 0.65f;
 volatile float g_ki_pitch = 0.0f;
 volatile float g_kd_pitch = 0.0f;
+
+/* Rate-setpoint feedforward, in motor-output us per deg/s. */
+volatile float g_roll_rate_ff  = 0.0f;
+volatile float g_pitch_rate_ff = 0.0f;
 
 volatile float g_kp_yaw   = 1.60f;
 volatile float g_ki_yaw   = 0.60f;
@@ -32,10 +36,10 @@ volatile float g_thr_override = 0.0f;
 volatile uint16_t g_thr_rc_max_us = 1490U;
 
 /* Quaternion attitude outer-loop P gains and rate limits. */
-volatile float g_kp_pitch_angle = 0.80f;
+volatile float g_kp_pitch_angle = 1.50f;
 volatile float g_pitch_angle_rate_limit = 60.0f;
 
-volatile float g_kp_roll_angle = 1.05f;
+volatile float g_kp_roll_angle = 1.50f;
 volatile float g_roll_angle_rate_limit = 60.0f;
 
 #define VOFA_AXIS_ROLL   0U
@@ -62,10 +66,10 @@ volatile float g_pid_out_limit = 180.0f;
 
 volatile uint8_t g_flow_hold_enable = 1U;
 volatile uint8_t g_flow_pos_enable  = 0U;
-volatile float g_flow_roll_gain = 0.02f;
-volatile float g_flow_pitch_gain = 0.02f;
-volatile float g_flow_angle_limit_deg = 2.0f;
-volatile uint8_t g_flow_min_quality = 20U;
+volatile float g_flow_roll_gain = 0.0f;
+volatile float g_flow_pitch_gain = 0.0f;
+volatile float g_flow_angle_limit_deg = 6.0f;
+volatile uint8_t g_flow_min_quality = 150U;
 
 volatile uint16_t g_flow_stale_ms = 120U;
 volatile float g_flow_pos_x_gain = 0.30f;
@@ -88,9 +92,12 @@ volatile uint32_t g_test_ramp_start_tick = 0U;
 static uint8_t  s_armed = 0U;
 static PID_t    pid_roll, pid_pitch, pid_yaw;
 static float    out_roll, out_pitch, out_yaw;
+static float    roll_rate_ff_out, pitch_rate_ff_out;
 static float    yaw_ff_out;
 static float    thr_base;
 static float    pitch_angle_rate_sp, roll_angle_rate_sp, yaw_angle_rate_sp;
+static float    gyro_roll_ctrl_dps = 0.0f;
+static float    gyro_pitch_ctrl_dps = 0.0f;
 static float    yaw_angle_target = 0.0f;
 static float    yaw_angle_error = 0.0f;
 static uint16_t prev_pwm[4] = {PWM_MIN_PULSE_US, PWM_MIN_PULSE_US,
@@ -119,6 +126,8 @@ static float    flow_pos_target_x_cm = 0.0f;
 static float    flow_pos_target_y_cm = 0.0f;
 static float    flow_vel_target_x_cmps = 0.0f;
 static float    flow_vel_target_y_cmps = 0.0f;
+static float    flow_vel_err_forward_cmps = 0.0f;
+static float    flow_vel_err_right_cmps = 0.0f;
 static uint8_t  flow_target_valid = 0U;
 static uint8_t  flow_pos_enable_prev = 0U;
 static uint8_t  flow_ok_prev = 0U;
@@ -161,6 +170,7 @@ volatile uint8_t g_height_guard_enable = 0U;
 /*
  * Commander commands:
  *   rp/ri/rd, pp/pi/pd, yp/yi/yd: rate-loop gains
+ *   rf/pf: roll/pitch rate-setpoint feedforward gains
  *   ra/pa/ya: attitude-loop P gains
  *   yf/yl: yaw throttle feedforward gain/limit
  *   rl/al: roll/pitch attitude rate limits
@@ -183,6 +193,12 @@ static void CMD_Parse(const char *line)
     else if (!strncmp(line, "pp", 2)) { g_kp_pitch = val; }
     else if (!strncmp(line, "pi", 2)) { g_ki_pitch = val; }
     else if (!strncmp(line, "pd", 2)) { g_kd_pitch = val; }
+    else if (!strncmp(line, "rf", 2)) {
+        if (val >= 0.0f && val <= 2.0f) { g_roll_rate_ff = val; }
+    }
+    else if (!strncmp(line, "pf", 2)) {
+        if (val >= 0.0f && val <= 2.0f) { g_pitch_rate_ff = val; }
+    }
     else if (!strncmp(line, "yp", 2)) { g_kp_yaw   = val; }
     else if (!strncmp(line, "yi", 2)) { g_ki_yaw   = val; }
     else if (!strncmp(line, "yd", 2)) { g_kd_yaw   = val; }
@@ -233,6 +249,14 @@ static void CMD_Parse(const char *line)
         uint8_t enable = (val > 0.5f) ? 1U : 0U;
         if (enable && !g_flow_pos_enable) { g_flow_reset_target = 1U; }
         g_flow_pos_enable = enable;
+    }
+    else if (!strncmp(line, "fm", 2)) {
+        int16_t mode = (int16_t)val;
+        if (mode == 0 || mode == 2) {
+            g_shared_sensor.flow_source_select = (uint8_t)mode;
+            g_flow_pos_enable = 0U;
+            g_flow_reset_target = 1U;
+        }
     }
     else if (!strncmp(line, "fr", 2)) {
         if (val >= -0.20f && val <= 0.20f) { g_flow_roll_gain = val; }
@@ -411,6 +435,7 @@ static uint8_t V307_AlarmPoll(uint32_t now_ms)
 #define SOFT_STOP_RC_THRESHOLD (-100) /* tr fixed-throttle bench mode: pull RC throttle below this to soft-stop. */
 #define SOFT_STOP_TIME_MS      2000U  /* Soft-stop ramp time; emergency disarm paths still lock immediately. */
 #define PID_DT               0.006667f  /* 1 / 150Hz */
+#define RATE_GYRO_LPF_ALPHA  0.4299f    /* 18Hz first-order LPF at 150Hz. */
 
 
 /*
@@ -696,6 +721,9 @@ void PID_Tick(void)
     float gyro_pitch_dps = g_shared_sensor.gyro_dps[1];
     float gyro_yaw_dps   = g_shared_sensor.gyro_dps[2];
 
+    gyro_roll_ctrl_dps += RATE_GYRO_LPF_ALPHA * (gyro_roll_dps - gyro_roll_ctrl_dps);
+    gyro_pitch_ctrl_dps += RATE_GYRO_LPF_ALPHA * (gyro_pitch_dps - gyro_pitch_ctrl_dps);
+
     OF0_Estimator_Update(PID_DT);
 
     {
@@ -715,7 +743,12 @@ void PID_Tick(void)
             ekf_mark != 0UL &&
             ekf_age <= g_flow_stale_ms &&
             g_shared_sensor.flow_valid &&
-            g_shared_sensor.flow_quality >= g_flow_min_quality) {
+            g_shared_sensor.flow_quality >= g_flow_min_quality &&
+            (g_shared_sensor.ekf_flags & 0x20U) != 0U &&
+            (g_shared_sensor.ekf_flags & 0x80U) == 0U &&
+            ((g_shared_sensor.flow_source_active == 0U) ||
+             (g_shared_sensor.flow_source_active == 2U &&
+              g_shared_sensor.flow_mode == 2U))) {
             flow_ok = 1U;
         }
         flow_ok_debug = flow_ok;
@@ -729,6 +762,8 @@ void PID_Tick(void)
             flow_pitch_target_deg = 0.0f;
             ctrl_roll_target_deg = 0.0f;
             ctrl_pitch_target_deg = 0.0f;
+            flow_vel_err_forward_cmps = 0.0f;
+            flow_vel_err_right_cmps = 0.0f;
         } else if (pos_enable) {
             uint8_t pos_just_enabled = (!flow_pos_enable_prev) ? 1U : 0U;
             uint8_t flow_just_ok = (!flow_ok_prev) ? 1U : 0U;
@@ -766,11 +801,28 @@ void PID_Tick(void)
             }
 
             if ((s_flow_cycle % 3U) == 0U) {
-                float vx_err = flow_vel_target_x_cmps - g_shared_sensor.ekf_vx_cmps;
-                float vy_err = flow_vel_target_y_cmps - g_shared_sensor.ekf_vy_cmps;
+                float vx_err_earth = flow_vel_target_x_cmps - g_shared_sensor.ekf_vx_cmps;
+                float vy_err_earth = flow_vel_target_y_cmps - g_shared_sensor.ekf_vy_cmps;
+                float forward_err;
+                float right_err;
                 float lim = g_flow_angle_limit_deg;
-                flow_roll_target_deg = clampf(g_flow_roll_gain * vx_err, -lim, lim);
-                flow_pitch_target_deg = clampf(g_flow_pitch_gain * vy_err, -lim, lim);
+
+                if (g_shared_sensor.flow_source_active == 2U) {
+                    /* Vendor OF2 coordinates: X=lateral/right, Y=forward. */
+                    right_err = vx_err_earth;
+                    forward_err = vy_err_earth;
+                } else {
+                    float yaw_r = g_shared_sensor.yaw * 0.017453293f;
+                    float cy = cosf(yaw_r);
+                    float sy = sinf(yaw_r);
+                    forward_err = cy * vx_err_earth + sy * vy_err_earth;
+                    right_err = -sy * vx_err_earth + cy * vy_err_earth;
+                }
+                flow_vel_err_forward_cmps = forward_err;
+                flow_vel_err_right_cmps = right_err;
+                /* Standard body geometry: right drives Roll, forward drives Pitch. */
+                flow_roll_target_deg = clampf(g_flow_roll_gain * right_err, -lim, lim);
+                flow_pitch_target_deg = clampf(g_flow_pitch_gain * forward_err, -lim, lim);
             }
         }
     }
@@ -804,8 +856,12 @@ void PID_Tick(void)
     }
 
     /* 内环：角速度 PD @ 150Hz（每�?PID tick 都跑�?*/
-    out_roll  = RatePD_Update(&pid_roll,  roll_angle_rate_sp,  gyro_roll_dps,  PID_DT);
-    out_pitch = RatePD_Update(&pid_pitch, pitch_angle_rate_sp, gyro_pitch_dps, PID_DT);
+    out_roll  = RatePD_Update(&pid_roll,  roll_angle_rate_sp,  gyro_roll_ctrl_dps,  PID_DT);
+    out_pitch = RatePD_Update(&pid_pitch, pitch_angle_rate_sp, gyro_pitch_ctrl_dps, PID_DT);
+    roll_rate_ff_out = g_roll_rate_ff * roll_angle_rate_sp;
+    pitch_rate_ff_out = g_pitch_rate_ff * pitch_angle_rate_sp;
+    out_roll = clampf(out_roll + roll_rate_ff_out, -g_pid_out_limit, g_pid_out_limit);
+    out_pitch = clampf(out_pitch + pitch_rate_ff_out, -g_pid_out_limit, g_pid_out_limit);
     out_yaw   = PID_Update(&pid_yaw,   yaw_angle_rate_sp,   gyro_yaw_dps,   PID_DT);
     yaw_ff_out = 0.0f;
 
@@ -1069,6 +1125,8 @@ int main(void)
                     PID_Reset(&pid_roll);
                     PID_Reset(&pid_pitch);
                     PID_Reset(&pid_yaw);
+                    gyro_roll_ctrl_dps = g_shared_sensor.gyro_dps[0];
+                    gyro_pitch_ctrl_dps = g_shared_sensor.gyro_dps[1];
                     pitch_angle_rate_sp = 0.0f;
                     roll_angle_rate_sp  = 0.0f;
                     yaw_angle_rate_sp   = 0.0f;
@@ -1128,7 +1186,7 @@ int main(void)
                 vofa[7] = (float)sensor_seen_update_tick;
                 BSP_VOFA_Send(vofa, 8U);
             } else if (g_vofa_view == VOFA_VIEW_FLOW) {
-                if (1) {
+                if (g_vofa_axis == 0U) {
                     /* OF0 estimator diagnostic page. Independent of vx axis selection. */
                     vofa[0] = of0_vx_cmps;
                     vofa[1] = of0_vy_cmps;
@@ -1138,26 +1196,36 @@ int main(void)
                     vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
                     vofa[6] = (float)g_shared_sensor.flow_quality;
                     vofa[7] = OF0_GetHeightCm();
-                } else if (g_vofa_axis == VOFA_AXIS_PITCH) {
+                } else if (g_vofa_axis == 1U) {
                     /* X轴 / Pitch: 位置→速度→倾角→角速度 (OF2 fusion mode) */
-                    vofa[0] = flow_pos_target_x_cm;
-                    vofa[1] = (float)g_shared_sensor.flow_integ_x_cm;
-                    vofa[2] = flow_vel_target_x_cmps;
-                    vofa[3] = (float)g_shared_sensor.flow_dx_fix_cmps;
-                    vofa[4] = flow_pitch_target_deg;
-                    vofa[5] = g_shared_sensor.pitch;
+                    vofa[0] = (float)g_shared_sensor.flow_mode;
+                    vofa[1] = (float)g_shared_sensor.flow_state;
+                    vofa[2] = (float)g_shared_sensor.flow_dx_cmps;
+                    vofa[3] = (float)g_shared_sensor.flow_dy_cmps;
+                    vofa[4] = (float)g_shared_sensor.flow_dx_fix_cmps;
+                    vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
                     vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = g_shared_sensor.gyro_dps[1];
-                } else {
+                    vofa[7] = (float)g_shared_sensor.flow_sample_count;
+                } else if (g_vofa_axis == 2U) {
                     /* Y轴 / Roll: 位置→速度→倾角→角速度 (OF2 fusion mode) */
-                    vofa[0] = flow_pos_target_y_cm;
-                    vofa[1] = (float)g_shared_sensor.flow_integ_y_cm;
-                    vofa[2] = flow_vel_target_y_cmps;
-                    vofa[3] = (float)g_shared_sensor.flow_dy_fix_cmps;
-                    vofa[4] = flow_roll_target_deg;
-                    vofa[5] = g_shared_sensor.roll;
+                    vofa[0] = (float)g_shared_sensor.flow_mode;
+                    vofa[1] = (float)g_shared_sensor.flow_integ_x_cm;
+                    vofa[2] = (float)g_shared_sensor.flow_integ_y_cm;
+                    vofa[3] = (float)g_shared_sensor.lf_range_distance_cm;
+                    vofa[4] = (float)g_shared_sensor.flow_dx_fix_cmps;
+                    vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
                     vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = g_shared_sensor.gyro_dps[0];
+                    vofa[7] = (float)g_shared_sensor.flow_sample_count;
+                } else {
+                    /* vd2 vx3: LF UART/parser diagnostics, independent of decode success. */
+                    vofa[0] = (float)g_shared_sensor.lf_dbg_irq_count;
+                    vofa[1] = (float)g_shared_sensor.lf_dbg_rx_byte_count;
+                    vofa[2] = (float)g_shared_sensor.lf_dbg_frame_ok_count;
+                    vofa[3] = (float)g_shared_sensor.lf_dbg_checksum_error_count;
+                    vofa[4] = (float)g_shared_sensor.lf_dbg_len_error_count;
+                    vofa[5] = (float)g_shared_sensor.lf_dbg_last_frame_id;
+                    vofa[6] = (float)g_shared_sensor.lf_dbg_last_frame_len;
+                    vofa[7] = (float)g_shared_sensor.lf_dbg_last_rx_byte;
                 }
                 BSP_VOFA_Send(vofa, 8U);
             } else if (g_vofa_view == VOFA_VIEW_CALIB) {
@@ -1215,26 +1283,71 @@ int main(void)
                 }
                 BSP_VOFA_Send(vofa, 8U);
             } else if (g_vofa_view == VOFA_VIEW_EKFCTL) {
-                if (g_vofa_axis == VOFA_AXIS_PITCH) {
-                    vofa[0] = g_shared_sensor.ekf_vy_cmps;
-                    vofa[1] = g_flow_pitch_gain;
-                    vofa[2] = ctrl_pitch_target_deg;
-                    vofa[3] = g_shared_sensor.pitch;
-                    vofa[4] = pitch_angle_rate_sp;
-                    vofa[5] = out_pitch;
-                    vofa[6] = g_shared_sensor.gyro_dps[1];
-                    vofa[7] = flow_ok_debug ? (float)(g_sys_tick - ekf_seen_local_ms)
-                                            : -(float)(g_sys_tick - ekf_seen_local_ms);
+                if (g_vofa_axis == 3U) {
+                    /* vd4 vx3: optical-flow observation versus fused XY state. */
+                    vofa[0] = g_shared_sensor.ekf_vx_obs_cmps;
+                    vofa[1] = g_shared_sensor.ekf_vx_cmps;
+                    vofa[2] = g_shared_sensor.ekf_vy_obs_cmps;
+                    vofa[3] = g_shared_sensor.ekf_vy_cmps;
+                    vofa[4] = g_shared_sensor.ekf_px_cm;
+                    vofa[5] = g_shared_sensor.ekf_py_cm;
+                    vofa[6] = (float)g_shared_sensor.flow_quality;
+                    vofa[7] = (float)g_shared_sensor.ekf_flags;
+                } else if (g_vofa_axis == 2U) {
+                    /* vd4 vx2: complete position-loop chain. */
+                    vofa[0] = flow_pos_target_x_cm;
+                    vofa[1] = g_shared_sensor.ekf_px_cm;
+                    vofa[2] = flow_pos_target_y_cm;
+                    vofa[3] = g_shared_sensor.ekf_py_cm;
+                    vofa[4] = flow_vel_target_x_cmps;
+                    vofa[5] = g_shared_sensor.ekf_vx_cmps;
+                    vofa[6] = flow_vel_target_y_cmps;
+                    vofa[7] = g_shared_sensor.ekf_vy_cmps;
+                } else if (g_vofa_axis == 1U) {
+                    /* vd4 vx1: complete attitude cascade for bandwidth checks. */
+                    vofa[0] = ctrl_roll_target_deg;
+                    vofa[1] = g_shared_sensor.roll;
+                    vofa[2] = roll_angle_rate_sp;
+                    vofa[3] = gyro_roll_ctrl_dps;
+                    vofa[4] = ctrl_pitch_target_deg;
+                    vofa[5] = g_shared_sensor.pitch;
+                    vofa[6] = pitch_angle_rate_sp;
+                    vofa[7] = gyro_pitch_ctrl_dps;
+                } else if (s_armed == 0U) {
+                    float yaw_r = g_shared_sensor.yaw * 0.017453293f;
+                    float cy = cosf(yaw_r);
+                    float sy = sinf(yaw_r);
+                    float vx_earth = g_shared_sensor.ekf_vx_cmps;
+                    float vy_earth = g_shared_sensor.ekf_vy_cmps;
+                    float forward;
+                    float right;
+
+                    if (g_shared_sensor.flow_source_active == 2U) {
+                        right = vx_earth;
+                        forward = vy_earth;
+                    } else {
+                        forward = cy * vx_earth + sy * vy_earth;
+                        right = -sy * vx_earth + cy * vy_earth;
+                    }
+
+                    /* Motor-safe yaw mapping diagnostic; these targets are display-only. */
+                    vofa[0] = vx_earth;
+                    vofa[1] = vy_earth;
+                    vofa[2] = forward;
+                    vofa[3] = right;
+                    vofa[4] = clampf(-g_flow_roll_gain * right, -9.0f, 9.0f);
+                    vofa[5] = clampf(-g_flow_pitch_gain * forward, -9.0f, 9.0f);
+                    vofa[6] = (float)g_shared_sensor.ekf_flags;
+                    vofa[7] = g_shared_sensor.yaw;
                 } else {
                     vofa[0] = g_shared_sensor.ekf_vx_cmps;
-                    vofa[1] = g_flow_roll_gain;
-                    vofa[2] = ctrl_roll_target_deg;
-                    vofa[3] = g_shared_sensor.roll;
-                    vofa[4] = roll_angle_rate_sp;
-                    vofa[5] = out_roll;
-                    vofa[6] = g_shared_sensor.gyro_dps[0];
-                    vofa[7] = flow_ok_debug ? (float)(g_sys_tick - ekf_seen_local_ms)
-                                            : -(float)(g_sys_tick - ekf_seen_local_ms);
+                    vofa[1] = g_shared_sensor.ekf_vy_cmps;
+                    vofa[2] = flow_vel_err_forward_cmps;
+                    vofa[3] = flow_vel_err_right_cmps;
+                    vofa[4] = ctrl_roll_target_deg;
+                    vofa[5] = g_shared_sensor.roll;
+                    vofa[6] = ctrl_pitch_target_deg;
+                    vofa[7] = g_shared_sensor.pitch;
                 }
                 BSP_VOFA_Send(vofa, 8U);
             } else {

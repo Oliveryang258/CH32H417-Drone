@@ -154,6 +154,19 @@ typedef struct
     uint8_t last_frame_len;          // 最后接收的帧数据长度
 } LF_DebugInfo_t;
 
+/* Independent RANGE snapshot.  This is local to V5F and does not change the
+ * V3F/V5F shared-memory ABI.  timestamp_ms is captured when the checksum-valid
+ * 0x34 frame is decoded, rather than when the main loop later consumes it. */
+typedef struct
+{
+    uint8_t  direction;
+    uint16_t angle_deg;
+    uint32_t distance_cm;
+    uint8_t  valid;
+    uint32_t timestamp_ms;
+    uint32_t sample_count;
+} LF_RangeSample_t;
+
 /* ==================== 公共API函数 ==================== */
 
 /**
@@ -209,6 +222,10 @@ void LF_ClearDataReady(void);
  * @note   返回的指针指向内部静态变量，不要修改
  */
 const LF_Data_t *LF_GetData(void);
+
+/* Atomically copy the latest decoded RANGE sample.
+ * Returns 1 after at least one RANGE frame has been decoded. */
+uint8_t LF_GetRangeSample(LF_RangeSample_t *out);
 
 /**
  * @brief  获取调试统计信息

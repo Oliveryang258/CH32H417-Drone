@@ -6,6 +6,5 @@
 #include "bsp_lf.h"
 #include "bsp_nrf.h"
 #include "bsp_pwm.h"
-#include "bsp_tof.h"
 
 #endif /* __BSP_H */

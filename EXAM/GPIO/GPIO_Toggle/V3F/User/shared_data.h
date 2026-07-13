@@ -48,10 +48,10 @@ typedef struct
     uint32_t rc_rx_count;   /* RC 包累计接收数（VOFA 调试用）*/
     uint32_t rc_lost_count; /* RC 链路超时累计次数 */
     uint8_t  alarm_flags;   /* bit0=battery low, bit1=overcurrent */
-    uint16_t tof_distance_mm;
-    uint8_t  tof_state;
-    uint8_t  tof_valid;
-    uint32_t tof_update_tick;
+    uint16_t tof_distance_mm; /* Anonymous LF RANGE slant distance, mm */
+    uint8_t  tof_state;       /* 0=valid, 1=sentinel, 2=range, 3=axis */
+    uint8_t  tof_valid;       /* committed validity for the latest RANGE frame */
+    uint32_t tof_update_tick; /* V5F decode timestamp in ms + 1; commit marker */
     int16_t  flow_dx_cmps;      /* optical-flow X velocity, cm/s */
     int16_t  flow_dy_cmps;      /* optical-flow Y velocity, cm/s */
     int16_t  flow_dx_fix_cmps;  /* fusion-corrected X velocity, cm/s */
@@ -92,6 +92,10 @@ typedef struct
     uint8_t  flow_source_select;    /* V3F request: 0=OF0 fusion, 2=vendor OF2 */
     uint8_t  flow_source_active;    /* V5F-confirmed active source */
     uint8_t  _pad5_[2];
+    float    of2_bias_vx_cmps;      /* pre-arm OF2 integral-slope bias */
+    float    of2_bias_vy_cmps;
+    uint8_t  of2_pos_calib_state;   /* 0=waiting, 1=collecting, 2=ready, 3=flying */
+    uint8_t  _pad_of2_[3];
     uint32_t lf_dbg_irq_count;
     uint32_t lf_dbg_rx_byte_count;
     uint32_t lf_dbg_frame_ok_count;

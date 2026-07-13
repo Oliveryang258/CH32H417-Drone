@@ -4,15 +4,15 @@
 #include "board_config.h"
 
 /*
- * 主副核通信模块（USART1，AF7）
+ * V307 通信模块（USART5，AF4）
  *
  * 硬件连接（board_config.h）：
- *   PA9  -> USART1_TX (AF7) -> 副芯片 RX
- *   PA10 -> USART1_RX (AF7) <- 副芯片 TX
+ *   PF5 -> USART5_TX (AF4) -> 连 V307 RX
+ *   PE0 -> USART5_RX (AF4) <- 连 V307 TX
  *
  * 功能说明：
- *   - 每隔 1 秒向副芯片（CH32V307）发送字符 'B'
- *   - 中断接收副芯片回复的字符，存入接收缓冲区
+ *   - 每隔 1 秒向 V307（CH32V307）发送字符 'B'
+ *   - 中断接收 V307 回复的字节，存入接收缓冲区
  *   - 提供接收查询接口
  */
 
@@ -28,7 +28,7 @@
 /* -------------------- 公共 API -------------------- */
 
 /**
- * @brief  初始化 USART1（PA9/PA10，AF7），使能 RX 中断。
+ * @brief  初始化 USART5（PF5/PE0，AF4），使能 RX 中断。
  */
 void COMM_Init(void);
 
@@ -75,8 +75,7 @@ uint8_t COMM_RxRead(uint8_t *out);
 void COMM_RxFlush(void);
 
 /**
- * @brief  USART1 中断服务函数（在 ch32h417_it.c 中调用此函数）。
+ * @brief  USART5 中断服务函数（直接在 bsp_comunicate.c 中实现）。
  */
-void COMM_USART1_IRQHandler(void);
 
 #endif /* __BSP_COMUNICATE_H */

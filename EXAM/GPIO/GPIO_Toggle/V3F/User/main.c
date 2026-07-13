@@ -36,10 +36,10 @@ volatile float g_thr_override = 0.0f;
 volatile uint16_t g_thr_rc_max_us = 1490U;
 
 /* Quaternion attitude outer-loop P gains and rate limits. */
-volatile float g_kp_pitch_angle = 1.50f;
+volatile float g_kp_pitch_angle = 2.0f;
 volatile float g_pitch_angle_rate_limit = 60.0f;
 
-volatile float g_kp_roll_angle = 1.50f;
+volatile float g_kp_roll_angle = 2.0f;
 volatile float g_roll_angle_rate_limit = 60.0f;
 
 #define VOFA_AXIS_ROLL   0U
@@ -50,6 +50,7 @@ volatile float g_roll_angle_rate_limit = 60.0f;
 #define VOFA_VIEW_FLOW    2U
 #define VOFA_VIEW_CALIB   3U
 #define VOFA_VIEW_EKFCTL  4U
+#define VOFA_VIEW_HEIGHT  5U
 
 volatile uint8_t g_vofa_axis = VOFA_AXIS_ROLL;
 volatile uint8_t g_vofa_view = VOFA_VIEW_CONTROL;
@@ -76,6 +77,19 @@ volatile float g_flow_pos_x_gain = 0.30f;
 volatile float g_flow_pos_y_gain = 0.30f;
 volatile float g_flow_vel_limit_cmps = 60.0f;
 volatile uint8_t g_flow_reset_target = 0U;
+/* Temporary velocity-step test: sticks command OF2 X/Y velocity while fs0. */
+
+/* Height hold is deliberately disabled after flashing.  Flight entry also
+ * requires the RC switch to move Fly(2) -> Hover(1) while armed and the TOF
+ * estimator to be ready. */
+volatile uint8_t g_height_hold_enable = 0U;
+volatile float g_height_pos_kp = 0.30f;              /* (m/s) / m = 1/s */
+volatile float g_height_vel_kp = 15.0f;              /* us / (m/s) */
+volatile float g_height_vel_ki = 0.0f;               /* us / m; start P-only */
+volatile float g_hover_throttle_us = 1400.0f;        /* nominal/fallback; ACTIVE captures current hover */
+volatile float g_height_corr_limit_us = 15.0f;       /* tuned collective correction authority */
+volatile float g_height_vz_up_max_mps = 0.15f;
+volatile float g_height_vz_down_max_mps = 0.15f;
 
 volatile float g_of0_kx = 1.0f;
 volatile float g_of0_ky = 1.0f;
@@ -83,7 +97,7 @@ volatile float g_of0_alpha = 0.85f;
 volatile float g_of0_gyro_comp_x = 0.0f;
 volatile float g_of0_gyro_comp_y = 0.0f;
 
-volatile uint32_t g_sys_tick = 0;  /* TIM2 PID tick counter, 150Hz. */
+volatile uint32_t g_sys_tick = 0;  /* Milliseconds accumulated by the 150 Hz TIM2 ISR. */
 
 volatile uint8_t  g_test_ramp_active = 0U;
 volatile uint32_t g_test_ramp_start_tick = 0U;
@@ -174,12 +188,21 @@ volatile uint8_t g_height_guard_enable = 0U;
  *   ra/pa/ya: attitude-loop P gains
  *   yf/yl: yaw throttle feedforward gain/limit
  *   rl/al: roll/pitch attitude rate limits
- *   tr, tx, vo, vx, vd, vf, hp, fo/fs/fr/fp/fl/fq/fx/fy/fv/fz, sl, pl, gr, tm
+ *   tr, tx, vo, vx, vd, vf, hp, fo/fs/fr/fp/fl/fq/fx/fy/fv/fz/ft/fu, sl, pl, gr, tm
+ *   ze/zp/zv/zi/zh/zl/zu/zd: height enable and conservative tuning
  */
 static void CMD_Parse(const char *line)
 {
     float val;
-    if (line[0] == '\0' || line[1] == '\0') return;
+    if (line[0] == '\0') return;
+
+    /* 单字符命令：B->开启摄像头, A->关闭摄像头 (转发给 V307) */
+    if (line[1] == '\0') {
+        if (line[0] == 'B') { COMM_SendByte('B'); return; }
+        if (line[0] == 'A') { COMM_SendByte('A'); return; }
+    }
+
+    if (line[1] == '\0') return;
     val = strtof(line + 2, NULL);
     if      (!strncmp(line, "wp", 2)) {
         if (val >= -0.20f && val <= 0.20f) { g_flow_pitch_gain = val; }
@@ -233,7 +256,7 @@ static void CMD_Parse(const char *line)
     }
     else if (!strncmp(line, "vd", 2)) {
         int16_t v = (int16_t)val;
-        if (v >= 0 && v <= 4) { g_vofa_view = (uint8_t)v; }
+        if (v >= 0 && v <= 5) { g_vofa_view = (uint8_t)v; }
     }
     else if (!strncmp(line, "vf", 2)) {
         int16_t hz = (int16_t)val;
@@ -243,7 +266,39 @@ static void CMD_Parse(const char *line)
         int16_t v = (int16_t)val;
         if (v >= 0 && v <= 4) { g_shared_sensor.calib_test_flag = (uint8_t)v; }
     }
-    else if (!strncmp(line, "hp", 2)) { g_height_guard_enable = (val > 0.5f) ? 1U : 0U; }
+    else if (!strncmp(line, "ze", 2)) {
+        if (s_armed == 0U) {
+            g_height_hold_enable = (val > 0.5f) ? 1U : 0U;
+            if (g_height_hold_enable != 0U) { g_height_guard_enable = 0U; }
+        }
+    }
+    else if (!strncmp(line, "zp", 2)) {
+        if (s_armed == 0U && val >= 0.0f && val <= 3.0f) { g_height_pos_kp = val; }
+    }
+    else if (!strncmp(line, "zv", 2)) {
+        if (s_armed == 0U && val >= 0.0f && val <= 100.0f) { g_height_vel_kp = val; }
+    }
+    else if (!strncmp(line, "zi", 2)) {
+        if (s_armed == 0U && val >= 0.0f && val <= 50.0f) { g_height_vel_ki = val; }
+    }
+    else if (!strncmp(line, "zh", 2)) {
+        if (s_armed == 0U && val >= 1100.0f && val <= 1500.0f) { g_hover_throttle_us = val; }
+    }
+    else if (!strncmp(line, "zl", 2)) {
+        if (s_armed == 0U && val >= 0.0f && val <= 30.0f) { g_height_corr_limit_us = val; }
+    }
+    else if (!strncmp(line, "zu", 2)) {
+        if (s_armed == 0U && val >= 0.05f && val <= 0.60f) { g_height_vz_up_max_mps = val; }
+    }
+    else if (!strncmp(line, "zd", 2)) {
+        if (s_armed == 0U && val >= 0.05f && val <= 0.60f) { g_height_vz_down_max_mps = val; }
+    }
+    else if (!strncmp(line, "hp", 2)) {
+        if (s_armed == 0U) {
+            g_height_guard_enable = (val > 0.5f) ? 1U : 0U;
+            if (g_height_guard_enable != 0U) { g_height_hold_enable = 0U; }
+        }
+    }
     else if (!strncmp(line, "fo", 2)) { g_flow_hold_enable = (val > 0.5f) ? 1U : 0U; }
     else if (!strncmp(line, "fs", 2)) {
         uint8_t enable = (val > 0.5f) ? 1U : 0U;
@@ -330,19 +385,19 @@ static void CMD_Poll(void)
 }
 
 /* ---- V307 串口协议解析 + 低压报警 ----
- * V307 (CH32V307VCT6) �?USART1 (PA9/PA10) 持续�?V3F 发送字节流�?
- *   0xBB <x> <y> 0xBC  视觉圆心追踪帧（4字节�?
- *   0x00               未发现圆�?字节心跳�?
- *   0xCC               电池低压（V307 �?4S<14V �?3S<11V 时每主循环都发）
- *   0xDD               电流过大�?15A�?
+ * V307 (CH32V307VCT6) 通过 USART5 (PF5/PE0) 持续向 V3F 发送字节流：
+ *   0xBB <x> <y> 0xBC  视觉圆心追踪帧（4字节）
+ *   0x00               未发现圆心（字节心跳）
+ *   0xCC               电池低压（V307 侧 4S<14V 或 3S<11V 时每主循环都发）
+ *   0xDD               电流过大（>15A）
  *   0xAA / 0xAB        摄像头初始化结果（仅启动时一次）
  *
- * 必须用状态机解析�?xBB 之后�?3 字节属于图像数据(x, y, 0xBC)�?
- * 不能误判�?0xCC/0xDD（图�?x, y 实际最�?~120�? 0xBB，正常不会冲突，
- * 但状态机能在协议未来扩展时仍然安全）�?
+ * 必须用状态机解析：0xBB 之后的 3 字节属于图像数据(x, y, 0xBC)，
+ * 不能误判为 0xCC/0xDD（图像 x, y 实际最大值 ~120，不会等于 0xBB，
+ * 但状态机能在协议未来扩展时仍然安全）。
  *
- * 报警逻辑�?00ms 内收到过 0xCC �?蜂鸣器持续响；超�?500ms 未再收到
- * �?解除报警（V307 端每个主循环都会发，停发即电压恢复或链路断开）�?
+ * 报警逻辑：500ms 内收到过 0xCC 则蜂鸣器持续响；超过 500ms 未再收到
+ * 则解除报警（V307 端每个主循环都会发，停发即电压恢复或链路断开）。
  */
 #define V307_TAG_IMG_HEAD    0xBBU
 #define V307_TAG_BATT_LOW    0xCCU
@@ -437,6 +492,43 @@ static uint8_t V307_AlarmPoll(uint32_t now_ms)
 #define PID_DT               0.006667f  /* 1 / 150Hz */
 #define RATE_GYRO_LPF_ALPHA  0.4299f    /* 18Hz first-order LPF at 150Hz. */
 
+/* Height estimator/control constants.  The source timestamp is V5F ms; data
+ * freshness is measured only with the local V3F g_sys_tick. */
+#define RC_SW_WAIT                   0U
+#define RC_SW_HEIGHT_HOLD            1U
+#define RC_SW_FLY                    2U
+#define HEIGHT_TOF_MIN_MM            50U
+#define HEIGHT_TOF_MAX_MM            4000U
+#define HEIGHT_TOF_I_FREEZE_MS       100U
+#define HEIGHT_TOF_TIMEOUT_MS        200U
+#define HEIGHT_SENSOR_RECOVERY_MS    500U
+#define HEIGHT_SOURCE_DT_MIN_S       0.010f
+#define HEIGHT_SOURCE_DT_MAX_S       0.100f
+#define HEIGHT_TILT_COS_MIN          0.819152f  /* cos(35 deg) */
+#define HEIGHT_LPF_CUTOFF_HZ         5.0f
+#define HEIGHT_VZ_LPF_CUTOFF_HZ      3.0f
+#define HEIGHT_JUMP_BASE_M           0.12f
+#define HEIGHT_JUMP_MAX_VZ_MPS       1.5f
+#define HEIGHT_READY_FRAMES          3U
+#define HEIGHT_ENTRY_MIN_M           0.15f
+#define HEIGHT_LOW_STICK             (-80)
+#define HEIGHT_ENTRY_BLEND_MS        500U
+#define HEIGHT_FALLBACK_BLEND_MS     300U
+#define HEIGHT_PI_DT                 (3.0f * PID_DT)
+#define HEIGHT_I_LIMIT_US            10.0f
+#define HEIGHT_ENTRY_VZ_MAX_MPS       0.60f
+
+#define HEIGHT_DIAG_NEW_FRAME        0x01U
+#define HEIGHT_DIAG_VALID            0x02U
+#define HEIGHT_DIAG_TIMEOUT          0x04U
+#define HEIGHT_DIAG_TILT_REJECT      0x08U
+#define HEIGHT_DIAG_JUMP_REJECT      0x10U
+#define HEIGHT_DIAG_ACTIVE           0x20U
+#define HEIGHT_DIAG_SAT_HIGH         0x40U
+#define HEIGHT_DIAG_SAT_LOW          0x80U
+#define HEIGHT_DIAG_ENTRY_REJECTED   0x0200U
+#define HEIGHT_DIAG_SENSOR_HOLD      0x0400U
+
 
 /*
  * 电机混控矩阵（X 型，从上往下视图）�?
@@ -484,6 +576,578 @@ static float clampf(float v, float lo, float hi)
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+typedef enum
+{
+    HEIGHT_MODE_OFF = 0,
+    HEIGHT_MODE_ACTIVE,
+    HEIGHT_MODE_SENSOR_HOLD,
+    HEIGHT_MODE_DEGRADED
+} HeightMode_t;
+
+typedef struct
+{
+    uint32_t seen_source_mark;
+    uint32_t accepted_source_mark;
+    uint32_t candidate_source_mark;
+    uint32_t last_seen_local_ms;
+    uint32_t last_accepted_local_ms;
+    uint16_t raw_mm;
+    uint16_t candidate_raw_mm;
+    float source_dt_ms;
+    float height_comp_m;
+    float height_filt_m;
+    float last_height_comp_m;
+    float last_height_filt_m;
+    float vz_raw_mps;
+    float vz_filt_mps;
+    uint8_t initialized;
+    uint8_t valid;
+    uint8_t good_frames;
+    uint8_t freeze_integrator;
+    uint8_t diag_flags;
+    uint8_t candidate_state;
+    uint8_t candidate_valid;
+    uint8_t candidate_ready;
+} HeightEstimator_t;
+
+static HeightEstimator_t s_height_est = {0};
+static HeightMode_t s_height_mode = HEIGHT_MODE_OFF;
+static uint8_t s_height_request_prev = 0U;
+static uint8_t s_height_reentry_block = 0U;
+static uint8_t s_height_cycle = 0U;
+static uint8_t s_height_sat_high = 0U;
+static uint8_t s_height_sat_low = 0U;
+static uint32_t s_height_transition_start_ms = 0UL;
+static float s_height_transition_from_us = (float)PWM_MIN_PULSE_US;
+static float s_height_target_m = 0.0f;
+static float s_height_target_vz_mps = 0.0f;
+static float s_height_vz_error_mps = 0.0f;
+static float s_height_p_us = 0.0f;
+static float s_height_i_us = 0.0f;
+static float s_height_correction_us = 0.0f;
+static float s_height_hover_base_us = 1400.0f;
+static float s_height_sensor_hold_us = (float)PWM_MIN_PULSE_US;
+static uint8_t s_height_entry_rejected = 0U;
+
+static uint8_t Height_ReadTofSnapshot(uint32_t *mark,
+                                      uint16_t *distance_mm,
+                                      uint8_t *state,
+                                      uint8_t *valid)
+{
+    uint8_t attempt;
+
+    for (attempt = 0U; attempt < 3U; attempt++) {
+        uint32_t mark_begin = g_shared_sensor.tof_update_tick;
+        uint32_t mark_end;
+        uint16_t d;
+        uint8_t st;
+        uint8_t ok;
+
+        if (mark_begin == 0UL) {
+            return 0U;
+        }
+
+        __asm__ volatile("fence rw, rw" ::: "memory");
+        d = g_shared_sensor.tof_distance_mm;
+        st = g_shared_sensor.tof_state;
+        ok = g_shared_sensor.tof_valid;
+        __asm__ volatile("fence rw, rw" ::: "memory");
+        mark_end = g_shared_sensor.tof_update_tick;
+
+        if (mark_begin == mark_end) {
+            *mark = mark_begin;
+            *distance_mm = d;
+            *state = st;
+            *valid = ok;
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+static void HeightEstimator_Update(uint32_t now_ms)
+{
+    uint32_t source_mark;
+    uint16_t distance_mm;
+    uint8_t source_state;
+    uint8_t source_valid;
+    uint8_t snapshot_confirmed = 0U;
+
+    s_height_est.diag_flags &= (uint8_t)~HEIGHT_DIAG_NEW_FRAME;
+
+    if (Height_ReadTofSnapshot(&source_mark, &distance_mm,
+                               &source_state, &source_valid) &&
+        source_mark != s_height_est.seen_source_mark) {
+        /* tof_update_tick is packed and therefore not naturally aligned in
+         * the fixed shared ABI.  Require the entire snapshot to be identical
+         * on two consecutive 150 Hz ticks before consuming it. */
+        if (s_height_est.candidate_ready != 0U &&
+            source_mark == s_height_est.candidate_source_mark &&
+            distance_mm == s_height_est.candidate_raw_mm &&
+            source_state == s_height_est.candidate_state &&
+            source_valid == s_height_est.candidate_valid) {
+            snapshot_confirmed = 1U;
+            s_height_est.candidate_ready = 0U;
+        } else {
+            s_height_est.candidate_source_mark = source_mark;
+            s_height_est.candidate_raw_mm = distance_mm;
+            s_height_est.candidate_state = source_state;
+            s_height_est.candidate_valid = source_valid;
+            s_height_est.candidate_ready = 1U;
+        }
+    }
+
+    if (snapshot_confirmed != 0U) {
+        float roll_deg = g_shared_sensor.roll;
+        float pitch_deg = g_shared_sensor.pitch;
+        float roll_r;
+        float pitch_r;
+        float tilt_cos;
+        float raw_m;
+        float height_comp_m;
+        float dt_s = 0.0f;
+        uint8_t sample_ok;
+
+        s_height_est.seen_source_mark = source_mark;
+        s_height_est.last_seen_local_ms = now_ms;
+        s_height_est.raw_mm = distance_mm;
+        s_height_est.diag_flags |= HEIGHT_DIAG_NEW_FRAME;
+
+        sample_ok = (source_valid != 0U &&
+                     source_state == 0U &&
+                     distance_mm >= HEIGHT_TOF_MIN_MM &&
+                     distance_mm <= HEIGHT_TOF_MAX_MM) ? 1U : 0U;
+
+        if (!(roll_deg == roll_deg) || !(pitch_deg == pitch_deg) ||
+            fabsf(roll_deg) > 85.0f || fabsf(pitch_deg) > 85.0f) {
+            sample_ok = 0U;
+            s_height_est.diag_flags |= HEIGHT_DIAG_TILT_REJECT;
+        }
+
+        roll_r = roll_deg * 0.017453293f;
+        pitch_r = pitch_deg * 0.017453293f;
+        tilt_cos = cosf(roll_r) * cosf(pitch_r);
+        if (tilt_cos < HEIGHT_TILT_COS_MIN) {
+            sample_ok = 0U;
+            s_height_est.diag_flags |= HEIGHT_DIAG_TILT_REJECT;
+        }
+
+        raw_m = (float)distance_mm * 0.001f;
+        height_comp_m = raw_m * tilt_cos;
+
+        if (sample_ok && s_height_est.initialized != 0U) {
+            uint32_t source_delta_ms = source_mark - s_height_est.accepted_source_mark;
+            dt_s = (float)source_delta_ms * 0.001f;
+            s_height_est.source_dt_ms = (float)source_delta_ms;
+
+            if (dt_s < HEIGHT_SOURCE_DT_MIN_S ||
+                dt_s > HEIGHT_SOURCE_DT_MAX_S) {
+                sample_ok = 0U;
+            } else {
+                float jump_limit_m = HEIGHT_JUMP_BASE_M + HEIGHT_JUMP_MAX_VZ_MPS * dt_s;
+                if (fabsf(height_comp_m - s_height_est.last_height_comp_m) > jump_limit_m) {
+                    sample_ok = 0U;
+                    s_height_est.diag_flags |= HEIGHT_DIAG_JUMP_REJECT;
+                }
+            }
+        }
+
+        if (sample_ok) {
+            if (s_height_est.initialized == 0U) {
+                s_height_est.height_comp_m = height_comp_m;
+                s_height_est.height_filt_m = height_comp_m;
+                s_height_est.last_height_comp_m = height_comp_m;
+                s_height_est.last_height_filt_m = height_comp_m;
+                s_height_est.vz_raw_mps = 0.0f;
+                s_height_est.vz_filt_mps = 0.0f;
+                s_height_est.source_dt_ms = 0.0f;
+                s_height_est.good_frames = 1U;
+                s_height_est.initialized = 1U;
+            } else {
+                const float height_tau = 1.0f / (6.283185307f * HEIGHT_LPF_CUTOFF_HZ);
+                const float vz_tau = 1.0f / (6.283185307f * HEIGHT_VZ_LPF_CUTOFF_HZ);
+                float height_alpha = dt_s / (height_tau + dt_s);
+                float vz_alpha = dt_s / (vz_tau + dt_s);
+
+                s_height_est.height_comp_m = height_comp_m;
+                s_height_est.height_filt_m += height_alpha *
+                    (height_comp_m - s_height_est.height_filt_m);
+                s_height_est.vz_raw_mps =
+                    (s_height_est.height_filt_m - s_height_est.last_height_filt_m) / dt_s;
+                s_height_est.vz_filt_mps += vz_alpha *
+                    (s_height_est.vz_raw_mps - s_height_est.vz_filt_mps);
+                s_height_est.last_height_comp_m = height_comp_m;
+                s_height_est.last_height_filt_m = s_height_est.height_filt_m;
+                if (s_height_est.good_frames < 255U) {
+                    s_height_est.good_frames++;
+                }
+            }
+
+            s_height_est.accepted_source_mark = source_mark;
+            s_height_est.last_accepted_local_ms = now_ms;
+            s_height_est.valid = 1U;
+            s_height_est.freeze_integrator = 0U;
+            s_height_est.diag_flags &= (uint8_t)~(HEIGHT_DIAG_TIMEOUT |
+                                                   HEIGHT_DIAG_TILT_REJECT |
+                                                   HEIGHT_DIAG_JUMP_REJECT);
+        } else {
+            s_height_est.good_frames = 0U;
+            s_height_est.freeze_integrator = 1U;
+        }
+    }
+
+    if (s_height_est.initialized != 0U &&
+        (now_ms - s_height_est.last_accepted_local_ms) > HEIGHT_TOF_I_FREEZE_MS) {
+        s_height_est.freeze_integrator = 1U;
+    }
+
+    if (s_height_est.initialized == 0U ||
+        (now_ms - s_height_est.last_accepted_local_ms) > HEIGHT_TOF_TIMEOUT_MS) {
+        s_height_est.valid = 0U;
+        s_height_est.good_frames = 0U;
+        s_height_est.freeze_integrator = 1U;
+        s_height_est.diag_flags |= HEIGHT_DIAG_TIMEOUT;
+        s_height_est.diag_flags &= (uint8_t)~HEIGHT_DIAG_VALID;
+        if ((now_ms - s_height_est.last_accepted_local_ms) > HEIGHT_TOF_TIMEOUT_MS) {
+            s_height_est.initialized = 0U;
+        }
+    } else {
+        s_height_est.diag_flags |= HEIGHT_DIAG_VALID;
+        s_height_est.diag_flags &= (uint8_t)~HEIGHT_DIAG_TIMEOUT;
+    }
+}
+
+/* The mode edge is intentionally independent of throttle.  A switch held high
+ * through arming must be released and asserted again before entry is possible. */
+static uint8_t Height_SwitchRequest(void)
+{
+    return (g_height_hold_enable != 0U &&
+            g_shared_sensor.rc_link_ok == 1U &&
+            g_shared_sensor.rc_sw == RC_SW_HEIGHT_HOLD) ? 1U : 0U;
+}
+
+static void HeightControl_Reset(void)
+{
+    uint8_t request = Height_SwitchRequest();
+
+    s_height_mode = HEIGHT_MODE_OFF;
+    s_height_request_prev = request;
+    s_height_reentry_block = request;
+    s_height_cycle = 0U;
+    s_height_sat_high = 0U;
+    s_height_sat_low = 0U;
+    s_height_transition_start_ms = 0UL;
+    s_height_transition_from_us = (float)PWM_MIN_PULSE_US;
+    s_height_target_m = s_height_est.height_filt_m;
+    s_height_target_vz_mps = 0.0f;
+    s_height_vz_error_mps = 0.0f;
+    s_height_p_us = 0.0f;
+    s_height_i_us = 0.0f;
+    s_height_correction_us = 0.0f;
+    s_height_hover_base_us = clampf(g_hover_throttle_us,
+                                    (float)PWM_MIN_PULSE_US,
+                                    (float)THR_MAX_US);
+    s_height_sensor_hold_us = (float)PWM_MIN_PULSE_US;
+    s_height_entry_rejected = 0U;
+}
+
+static void HeightControl_StartDegraded(uint32_t now_ms, uint8_t block_reentry)
+{
+    s_height_mode = HEIGHT_MODE_DEGRADED;
+    s_height_transition_start_ms = now_ms;
+    s_height_transition_from_us = thr_base;
+    s_height_target_vz_mps = 0.0f;
+    s_height_vz_error_mps = 0.0f;
+    s_height_p_us = 0.0f;
+    s_height_i_us = 0.0f;
+    s_height_correction_us = 0.0f;
+    s_height_sat_high = 0U;
+    s_height_sat_low = 0U;
+    if (block_reentry != 0U) {
+        s_height_reentry_block = 1U;
+    }
+}
+
+/* Manual throttle is intentionally ignored while height hold is active.  A
+ * sensor dropout therefore holds the last applied collective instead of
+ * silently handing control to an arbitrary, previously ignored stick value. */
+static void HeightControl_StartSensorHold(uint32_t now_ms)
+{
+    s_height_mode = HEIGHT_MODE_SENSOR_HOLD;
+    s_height_reentry_block = 1U;
+    s_height_cycle = 0U;
+    s_height_transition_start_ms = now_ms;
+    s_height_sensor_hold_us = clampf(thr_base,
+                                     (float)PWM_MIN_PULSE_US,
+                                     (float)THR_MAX_US);
+    s_height_target_vz_mps = 0.0f;
+    s_height_vz_error_mps = 0.0f;
+    s_height_p_us = 0.0f;
+    s_height_i_us = 0.0f;
+    s_height_correction_us = 0.0f;
+    s_height_sat_high = 0U;
+    s_height_sat_low = 0U;
+}
+
+static void HeightControl_ResumeSensorHold(uint32_t now_ms)
+{
+    float resume_collective = clampf(thr_base,
+                                     (float)PWM_MIN_PULSE_US,
+                                     (float)THR_MAX_US);
+
+    s_height_mode = HEIGHT_MODE_ACTIVE;
+    s_height_reentry_block = 0U;
+    s_height_cycle = 5U;
+    s_height_transition_start_ms = now_ms;
+    s_height_transition_from_us = resume_collective;
+    s_height_sensor_hold_us = resume_collective;
+    s_height_hover_base_us = resume_collective;
+    s_height_target_m = s_height_est.height_filt_m;
+    s_height_target_vz_mps = 0.0f;
+    s_height_vz_error_mps = 0.0f;
+    s_height_p_us = 0.0f;
+    s_height_i_us = 0.0f;
+    s_height_correction_us = 0.0f;
+    s_height_sat_high = 0U;
+    s_height_sat_low = 0U;
+    s_height_entry_rejected = 0U;
+}
+
+static void HeightControl_PositionLoop(void)
+{
+    float height_error_m = s_height_target_m - s_height_est.height_filt_m;
+    s_height_target_vz_mps = clampf(g_height_pos_kp * height_error_m,
+                                    -g_height_vz_down_max_mps,
+                                     g_height_vz_up_max_mps);
+}
+
+static void HeightControl_VelocityLoop(void)
+{
+    float i_candidate;
+    float output_candidate;
+    float limit = clampf(g_height_corr_limit_us, 0.0f, 30.0f);
+    uint8_t allow_integrator = (s_height_est.freeze_integrator == 0U) ? 1U : 0U;
+
+    s_height_vz_error_mps = s_height_target_vz_mps - s_height_est.vz_filt_mps;
+    s_height_p_us = g_height_vel_kp * s_height_vz_error_mps;
+    i_candidate = clampf(s_height_i_us +
+                         g_height_vel_ki * s_height_vz_error_mps * HEIGHT_PI_DT,
+                         -HEIGHT_I_LIMIT_US, HEIGHT_I_LIMIT_US);
+
+    if ((s_height_sat_high != 0U && s_height_vz_error_mps > 0.0f) ||
+        (s_height_sat_low != 0U && s_height_vz_error_mps < 0.0f)) {
+        allow_integrator = 0U;
+    }
+    if ((g_sys_tick - s_height_transition_start_ms) < HEIGHT_ENTRY_BLEND_MS) {
+        allow_integrator = 0U;
+    }
+
+    output_candidate = s_height_p_us + i_candidate;
+    if ((output_candidate > limit && s_height_vz_error_mps > 0.0f) ||
+        (output_candidate < -limit && s_height_vz_error_mps < 0.0f)) {
+        allow_integrator = 0U;
+    }
+
+    if (allow_integrator != 0U) {
+        s_height_i_us = i_candidate;
+    }
+    s_height_correction_us = clampf(s_height_p_us + s_height_i_us,
+                                    -limit, limit);
+}
+
+/* Returns 1 while height code owns collective_target_us. */
+static uint8_t HeightControl_Update(float manual_target_us,
+                                    uint32_t now_ms,
+                                    float *collective_target_us)
+{
+    uint8_t request = Height_SwitchRequest();
+    uint8_t rising = (request != 0U && s_height_request_prev == 0U) ? 1U : 0U;
+
+    if (request == 0U) {
+        s_height_reentry_block = 0U;
+        s_height_entry_rejected = 0U;
+    }
+
+    if (g_test_motor != 0U || g_test_ramp_active != 0U ||
+        g_thr_override > 1.0f || soft_stop_active != 0U) {
+        HeightControl_Reset();
+        *collective_target_us = manual_target_us;
+        return 0U;
+    }
+
+    if (s_height_mode == HEIGHT_MODE_ACTIVE && s_height_est.valid == 0U) {
+        HeightControl_StartSensorHold(now_ms);
+    } else if (s_height_mode == HEIGHT_MODE_ACTIVE &&
+               (request == 0U || STICK_THROTTLE <= HEIGHT_LOW_STICK)) {
+        HeightControl_StartDegraded(now_ms, 0U);
+    }
+
+    if (s_height_mode == HEIGHT_MODE_SENSOR_HOLD) {
+        uint32_t hold_elapsed_ms = now_ms - s_height_transition_start_ms;
+
+        if (request == 0U || STICK_THROTTLE <= HEIGHT_LOW_STICK) {
+            HeightControl_StartDegraded(now_ms, 0U);
+        } else if (hold_elapsed_ms <= HEIGHT_SENSOR_RECOVERY_MS &&
+                   s_height_est.valid != 0U &&
+                   s_height_est.good_frames >= HEIGHT_READY_FRAMES) {
+            HeightControl_ResumeSensorHold(now_ms);
+        }
+    }
+
+    if (s_height_mode == HEIGHT_MODE_OFF && rising != 0U) {
+        float correction_limit = clampf(g_height_corr_limit_us, 0.0f, 30.0f);
+        float capture_lo = (float)PWM_MIN_PULSE_US + correction_limit;
+        float capture_hi = (float)THR_MAX_US - correction_limit;
+        uint8_t entry_ready = (s_height_reentry_block == 0U &&
+                               STICK_THROTTLE > HEIGHT_LOW_STICK &&
+                               s_height_est.valid != 0U &&
+                               s_height_est.good_frames >= HEIGHT_READY_FRAMES &&
+                               s_height_est.height_filt_m >= HEIGHT_ENTRY_MIN_M &&
+                               fabsf(s_height_est.vz_filt_mps) <=
+                                   HEIGHT_ENTRY_VZ_MAX_MPS &&
+                               thr_base >= capture_lo &&
+                               thr_base <= capture_hi) ? 1U : 0U;
+
+        if (entry_ready != 0U) {
+            s_height_mode = HEIGHT_MODE_ACTIVE;
+            /* Capture the collective actually flying the aircraft on the
+             * switch edge.  This avoids forcing different batteries toward a
+             * fixed nominal hover throttle and makes the handover bumpless. */
+            s_height_hover_base_us = thr_base;
+            s_height_target_m = s_height_est.height_filt_m;
+            s_height_target_vz_mps = 0.0f;
+            s_height_vz_error_mps = 0.0f;
+            s_height_p_us = 0.0f;
+            s_height_i_us = 0.0f;
+            s_height_correction_us = 0.0f;
+            s_height_sat_high = 0U;
+            s_height_sat_low = 0U;
+            s_height_cycle = 5U; /* next tick runs 25Hz P before 50Hz PI */
+            s_height_transition_start_ms = now_ms;
+            s_height_transition_from_us = thr_base;
+            s_height_entry_rejected = 0U;
+        } else {
+            /* Require Fly -> Hover again.  Holding the switch in Hover after
+             * a rejected edge must never cause a late surprise takeover when
+             * the estimator subsequently becomes ready. */
+            s_height_reentry_block = 1U;
+            s_height_entry_rejected = 1U;
+        }
+    }
+
+    if (s_height_mode == HEIGHT_MODE_ACTIVE) {
+        float controller_collective_us;
+        float blend;
+        uint32_t elapsed_ms;
+
+        s_height_cycle++;
+        if (s_height_cycle >= 6U) {
+            s_height_cycle = 0U;
+        }
+        if (s_height_cycle == 0U) {
+            HeightControl_PositionLoop();
+        }
+        if ((s_height_cycle % 3U) == 0U) {
+            HeightControl_VelocityLoop();
+        }
+
+        controller_collective_us = clampf(s_height_hover_base_us + s_height_correction_us,
+                                          (float)PWM_MIN_PULSE_US,
+                                          (float)THR_MAX_US);
+        elapsed_ms = now_ms - s_height_transition_start_ms;
+        blend = (elapsed_ms >= HEIGHT_ENTRY_BLEND_MS) ? 1.0f :
+                ((float)elapsed_ms / (float)HEIGHT_ENTRY_BLEND_MS);
+        *collective_target_us = s_height_transition_from_us +
+            blend * (controller_collective_us - s_height_transition_from_us);
+        s_height_request_prev = request;
+        return 1U;
+    }
+
+    if (s_height_mode == HEIGHT_MODE_SENSOR_HOLD) {
+        *collective_target_us = s_height_sensor_hold_us;
+        s_height_request_prev = request;
+        return 1U;
+    }
+
+    if (s_height_mode == HEIGHT_MODE_DEGRADED) {
+        uint32_t elapsed_ms = now_ms - s_height_transition_start_ms;
+        float blend = (elapsed_ms >= HEIGHT_FALLBACK_BLEND_MS) ? 1.0f :
+                      ((float)elapsed_ms / (float)HEIGHT_FALLBACK_BLEND_MS);
+        *collective_target_us = s_height_transition_from_us +
+            blend * (manual_target_us - s_height_transition_from_us);
+        if (elapsed_ms >= HEIGHT_FALLBACK_BLEND_MS) {
+            s_height_mode = HEIGHT_MODE_OFF;
+        }
+        s_height_request_prev = request;
+        return 1U;
+    }
+
+    s_height_request_prev = request;
+    *collective_target_us = manual_target_us;
+    return 0U;
+}
+
+static void HeightControl_ApplyHeadroom(float out_roll_mix,
+                                        float out_pitch_mix,
+                                        float out_yaw_mix,
+                                        float *collective_us)
+{
+    float mix_term[4];
+    float collective_lo = (float)PWM_MIN_PULSE_US;
+    float collective_hi = (float)THR_MAX_US;
+    float requested = *collective_us;
+    uint8_t i;
+
+    if (s_height_mode != HEIGHT_MODE_ACTIVE &&
+        s_height_mode != HEIGHT_MODE_SENSOR_HOLD) {
+        s_height_sat_high = 0U;
+        s_height_sat_low = 0U;
+        return;
+    }
+
+    /* Preserve the existing mixer signs; only calculate its collective room. */
+    mix_term[0] =  out_roll_mix - out_pitch_mix - out_yaw_mix;
+    mix_term[1] = -out_roll_mix - out_pitch_mix + out_yaw_mix;
+    mix_term[2] = -out_roll_mix + out_pitch_mix - out_yaw_mix;
+    mix_term[3] =  out_roll_mix + out_pitch_mix + out_yaw_mix;
+
+    for (i = 0U; i < 4U; i++) {
+        float lo = (float)PWM_MIN_PULSE_US - mix_term[i];
+        float hi = (float)PWM_SAFE_MAX_US - mix_term[i];
+        if (lo > collective_lo) collective_lo = lo;
+        if (hi < collective_hi) collective_hi = hi;
+    }
+
+    if (collective_lo > collective_hi) {
+        *collective_us = clampf(requested,
+                                (float)PWM_MIN_PULSE_US,
+                                (float)THR_MAX_US);
+        s_height_sat_high = 1U;
+        s_height_sat_low = 1U;
+        return;
+    }
+
+    *collective_us = clampf(requested, collective_lo, collective_hi);
+    s_height_sat_high = (requested > collective_hi ||
+                         (s_height_correction_us >= g_height_corr_limit_us &&
+                          s_height_vz_error_mps > 0.0f)) ? 1U : 0U;
+    s_height_sat_low = (requested < collective_lo ||
+                        (s_height_correction_us <= -g_height_corr_limit_us &&
+                         s_height_vz_error_mps < 0.0f)) ? 1U : 0U;
+}
+
+static uint16_t HeightControl_DiagFlags(void)
+{
+    uint16_t flags = (uint16_t)s_height_est.diag_flags;
+    if (s_height_mode == HEIGHT_MODE_ACTIVE) flags |= HEIGHT_DIAG_ACTIVE;
+    if (s_height_mode == HEIGHT_MODE_SENSOR_HOLD) flags |= HEIGHT_DIAG_SENSOR_HOLD;
+    if (s_height_sat_high != 0U) flags |= HEIGHT_DIAG_SAT_HIGH;
+    if (s_height_sat_low != 0U) flags |= HEIGHT_DIAG_SAT_LOW;
+    if (s_height_entry_rejected != 0U) flags |= HEIGHT_DIAG_ENTRY_REJECTED;
+    return flags;
 }
 
 static float stick_norm(int16_t stick)
@@ -603,7 +1267,11 @@ static void PID_Timer_Init(void)
 /* ---- PID 主函数（�?TIM2 ISR 直接调用 @ 150Hz�?--- */
 void PID_Tick(void)
 {
-    if (!s_armed) return;
+    HeightEstimator_Update(g_sys_tick);
+    if (!s_armed) {
+        HeightControl_Reset();
+        return;
+    }
 
     /* ---- 角速度看门�?----
      * 任意�?|gyro_dps| 持续超过 500dps 超过 50ms�?0 �?PID 周期�?     * 则判定为失控（电调失�?混控反向），立即强制 disarm�?*/
@@ -624,6 +1292,7 @@ void PID_Tick(void)
                 PID_Reset(&pid_roll);
                 PID_Reset(&pid_pitch);
                 PID_Reset(&pid_yaw);
+                HeightControl_Reset();
                 pitch_angle_rate_sp = 0.0f;
                 roll_angle_rate_sp  = 0.0f;
                 yaw_angle_rate_sp   = 0.0f;
@@ -640,6 +1309,7 @@ void PID_Tick(void)
                 flow_ok_prev = 0U;
 
                 g_thr_override     = 0.0f;
+                g_test_motor       = 0U;
                 g_test_ramp_active = 0U;
                 g_test_ramp_start_tick = 0U;
                 soft_stop_active = 0U;
@@ -679,6 +1349,8 @@ void PID_Tick(void)
         g_thr_override = 0.0f;
         g_test_ramp_active = 0U;
         g_test_ramp_start_tick = 0U;
+        flow_vel_target_x_cmps = 0.0f;
+        flow_vel_target_y_cmps = 0.0f;
         out_roll = out_pitch = out_yaw = 0.0f;
         yaw_ff_out = 0.0f;
         pitch_angle_rate_sp = 0.0f;
@@ -686,6 +1358,7 @@ void PID_Tick(void)
         PID_Reset(&pid_roll);
         PID_Reset(&pid_pitch);
         PID_Reset(&pid_yaw);
+        HeightControl_Reset();
     }
 
     if (soft_stop_active) {
@@ -695,6 +1368,10 @@ void PID_Tick(void)
         if (elapsed >= SOFT_STOP_TIME_MS) {
             PWM_Lock();
             s_armed = 0U;
+            g_test_motor = 0U;
+            g_test_ramp_active = 0U;
+            g_test_ramp_start_tick = 0U;
+            HeightControl_Reset();
             soft_stop_active = 0U;
             soft_stop_start_tick = 0U;
             prev_pwm[0] = prev_pwm[1] = prev_pwm[2] = prev_pwm[3] = PWM_MIN_PULSE_US;
@@ -808,7 +1485,7 @@ void PID_Tick(void)
                 float lim = g_flow_angle_limit_deg;
 
                 if (g_shared_sensor.flow_source_active == 2U) {
-                    /* Vendor OF2 coordinates: X=lateral/right, Y=forward. */
+                    /* Installed OF2 axes used by the known-good loop: X=right, Y=forward. */
                     right_err = vx_err_earth;
                     forward_err = vy_err_earth;
                 } else {
@@ -867,6 +1544,8 @@ void PID_Tick(void)
 
     /* 油门目标：缓升测�?> tr override > RC 摇杆 */
     float thr_target = (float)PWM_MIN_PULSE_US;
+    float height_collective_target = (float)PWM_MIN_PULSE_US;
+    uint8_t height_owns_collective;
 
     {
         static uint8_t s_prev_key4 = 0U;
@@ -905,8 +1584,15 @@ void PID_Tick(void)
         }
     }
 
+    height_owns_collective = HeightControl_Update(thr_target, g_sys_tick,
+                                                   &height_collective_target);
+    if (height_owns_collective != 0U) {
+        thr_target = height_collective_target;
+    }
+
     /* 高度保护 */
-    if (g_height_guard_enable && g_test_motor == 0U && g_test_ramp_active == 0U) {
+    if (g_height_guard_enable && height_owns_collective == 0U &&
+        g_test_motor == 0U && g_test_ramp_active == 0U) {
         uint16_t tof_mm = g_shared_sensor.tof_distance_mm;
         uint8_t tof_valid = g_shared_sensor.tof_valid;
         uint32_t tof_mark = g_shared_sensor.tof_update_tick;
@@ -938,6 +1624,8 @@ void PID_Tick(void)
                     g_thr_override = 0.0f;
                     g_test_ramp_active = 0U;
                     g_test_ramp_start_tick = 0U;
+                    flow_vel_target_x_cmps = 0.0f;
+                    flow_vel_target_y_cmps = 0.0f;
                     out_roll = out_pitch = out_yaw = 0.0f;
                     yaw_ff_out = 0.0f;
                     pitch_angle_rate_sp = 0.0f;
@@ -945,6 +1633,7 @@ void PID_Tick(void)
                     PID_Reset(&pid_roll);
                     PID_Reset(&pid_pitch);
                     PID_Reset(&pid_yaw);
+                    HeightControl_Reset();
                 }
             } else if (tof_mm >= HEIGHT_GUARD_HIGH_MM) {
                 height_guard_high_ms += 7U;
@@ -975,13 +1664,18 @@ void PID_Tick(void)
         height_guard_cap_us = thr_target;
     }
 
-    /* 油门缓升/缓降 */
-    if (thr_base < thr_target) {
-        thr_base += THR_RAMP_UP_US;
-        if (thr_base > thr_target) thr_base = thr_target;
-    } else if (thr_base > thr_target) {
-        thr_base -= THR_RAMP_DN_US;
-        if (thr_base < thr_target) thr_base = thr_target;
+    /* Height ACTIVE/SENSOR_HOLD/DEGRADED already owns the collective path.
+     * Manual/test throttle retains the original slow symmetric ramp. */
+    if (height_owns_collective != 0U) {
+        thr_base = thr_target;
+    } else {
+        if (thr_base < thr_target) {
+            thr_base += THR_RAMP_UP_US;
+            if (thr_base > thr_target) thr_base = thr_target;
+        } else if (thr_base > thr_target) {
+            thr_base -= THR_RAMP_DN_US;
+            if (thr_base < thr_target) thr_base = thr_target;
+        }
     }
 
     if (g_test_motor == 0U && thr_base > (float)YAW_FF_START_US && g_yaw_ff_limit > 0.0f) {
@@ -992,6 +1686,7 @@ void PID_Tick(void)
 
     /* 电机混控（X 型机架） */
     float out_roll_mix = out_roll;
+    HeightControl_ApplyHeadroom(out_roll_mix, out_pitch, out_yaw, &thr_base);
     uint16_t m1 = mix_clamp(thr_base + out_roll_mix - out_pitch - out_yaw); /* FR CCW */
     uint16_t m2 = mix_clamp(thr_base - out_roll_mix - out_pitch + out_yaw); /* FL CW  */
     uint16_t m3 = mix_clamp(thr_base - out_roll_mix + out_pitch - out_yaw); /* RL CCW */
@@ -1072,11 +1767,13 @@ int main(void)
 
         switch (state) {
         case STATE_ARMED: {
-            uint8_t in_fly = ((g_shared_sensor.rc_sw == 2U) &&
-                              (g_shared_sensor.rc_link_ok == 1U));
+            uint8_t rc_mode_armed =
+                ((g_shared_sensor.rc_sw == RC_SW_FLY) ||
+                 (g_shared_sensor.rc_sw == RC_SW_HEIGHT_HOLD)) &&
+                (g_shared_sensor.rc_link_ok == 1U);
 
             /* 上锁条件：RC 丢失 �?过流 */
-            if (!in_fly || v307_overcurrent) {
+            if (!rc_mode_armed || v307_overcurrent) {
                 NVIC_DisableIRQ(TIM2_IRQn);
                 PWM_Lock();
                 s_armed = 0U;
@@ -1085,6 +1782,7 @@ int main(void)
                 PID_Reset(&pid_roll);
                 PID_Reset(&pid_pitch);
                 PID_Reset(&pid_yaw);
+                HeightControl_Reset();
                 pitch_angle_rate_sp = 0.0f;
                 roll_angle_rate_sp  = 0.0f;
                 yaw_angle_rate_sp   = 0.0f;
@@ -1101,6 +1799,7 @@ int main(void)
                 flow_ok_prev = 0U;
 
                 g_thr_override     = 0.0f;
+                g_test_motor       = 0U;
                 g_test_ramp_active = 0U;
                 g_test_ramp_start_tick = 0U;
                 soft_stop_active = 0U;
@@ -1114,7 +1813,7 @@ int main(void)
         }
         case STATE_DISARMED:
         default: {
-            uint8_t in_fly = ((g_shared_sensor.rc_sw == 2U) &&
+            uint8_t in_fly = ((g_shared_sensor.rc_sw == RC_SW_FLY) &&
                               (g_shared_sensor.rc_link_ok == 1U));
 
             /* 解锁条件：RC 飞控档位 + 油门最�?+ 无过�?*/
@@ -1125,6 +1824,7 @@ int main(void)
                     PID_Reset(&pid_roll);
                     PID_Reset(&pid_pitch);
                     PID_Reset(&pid_yaw);
+                    HeightControl_Reset();
                     gyro_roll_ctrl_dps = g_shared_sensor.gyro_dps[0];
                     gyro_pitch_ctrl_dps = g_shared_sensor.gyro_dps[1];
                     pitch_angle_rate_sp = 0.0f;
@@ -1282,17 +1982,42 @@ int main(void)
                     break;
                 }
                 BSP_VOFA_Send(vofa, 8U);
+            } else if (g_vofa_view == VOFA_VIEW_HEIGHT) {
+                if (g_vofa_axis == 1U) {
+                    /* vd5 vx1: switch-edge capture and collective handover. */
+                    vofa[0] = g_hover_throttle_us;
+                    vofa[1] = s_height_hover_base_us;
+                    vofa[2] = thr_base;
+                    vofa[3] = s_height_est.height_filt_m;
+                    vofa[4] = s_height_est.vz_filt_mps;
+                    vofa[5] = s_height_correction_us;
+                    vofa[6] = (s_height_mode != HEIGHT_MODE_OFF) ?
+                        (float)(g_sys_tick - s_height_transition_start_ms) : 0.0f;
+                    vofa[7] = (float)HeightControl_DiagFlags();
+                } else {
+                    /* vd5 vx0: complete asynchronous TOF -> height-control chain. */
+                    vofa[0] = (float)s_height_est.raw_mm;
+                    vofa[1] = s_height_est.source_dt_ms;
+                    vofa[2] = s_height_est.height_filt_m;
+                    vofa[3] = s_height_est.vz_filt_mps;
+                    vofa[4] = s_height_target_m;
+                    vofa[5] = s_height_target_vz_mps;
+                    vofa[6] = s_height_correction_us;
+                    vofa[7] = (float)HeightControl_DiagFlags();
+                }
+                BSP_VOFA_Send(vofa, 8U);
             } else if (g_vofa_view == VOFA_VIEW_EKFCTL) {
                 if (g_vofa_axis == 3U) {
-                    /* vd4 vx3: optical-flow observation versus fused XY state. */
-                    vofa[0] = g_shared_sensor.ekf_vx_obs_cmps;
-                    vofa[1] = g_shared_sensor.ekf_vx_cmps;
-                    vofa[2] = g_shared_sensor.ekf_vy_obs_cmps;
-                    vofa[3] = g_shared_sensor.ekf_vy_cmps;
-                    vofa[4] = g_shared_sensor.ekf_px_cm;
-                    vofa[5] = g_shared_sensor.ekf_py_cm;
+                    /* vd4 vx3: OF2 velocity-control data versus integration data. */
+                    vofa[0] = (float)g_shared_sensor.flow_dx_cmps;
+                    vofa[1] = (float)g_shared_sensor.flow_dx_fix_cmps;
+                    vofa[2] = (float)g_shared_sensor.flow_dy_cmps;
+                    vofa[3] = (float)g_shared_sensor.flow_dy_fix_cmps;
+                    /* Direct command readback: prove fr/fp reached V3 memory. */
+                    vofa[4] = g_flow_roll_gain;
+                    vofa[5] = g_flow_pitch_gain;
                     vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = (float)g_shared_sensor.ekf_flags;
+                    vofa[7] = (float)g_shared_sensor.of2_pos_calib_state;
                 } else if (g_vofa_axis == 2U) {
                     /* vd4 vx2: complete position-loop chain. */
                     vofa[0] = flow_pos_target_x_cm;
@@ -1340,10 +2065,11 @@ int main(void)
                     vofa[6] = (float)g_shared_sensor.ekf_flags;
                     vofa[7] = g_shared_sensor.yaw;
                 } else {
-                    vofa[0] = g_shared_sensor.ekf_vx_cmps;
-                    vofa[1] = g_shared_sensor.ekf_vy_cmps;
-                    vofa[2] = flow_vel_err_forward_cmps;
-                    vofa[3] = flow_vel_err_right_cmps;
+                    /* vd4 vx0: commanded/actual velocity and attitude response. */
+                    vofa[0] = flow_vel_target_x_cmps;
+                    vofa[1] = g_shared_sensor.ekf_vx_cmps;
+                    vofa[2] = flow_vel_target_y_cmps;
+                    vofa[3] = g_shared_sensor.ekf_vy_cmps;
                     vofa[4] = ctrl_roll_target_deg;
                     vofa[5] = g_shared_sensor.roll;
                     vofa[6] = ctrl_pitch_target_deg;

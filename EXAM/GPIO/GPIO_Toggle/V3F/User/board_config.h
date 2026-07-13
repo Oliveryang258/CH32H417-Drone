@@ -61,11 +61,15 @@
 #define LED_PORT               GPIOE
 #define LED_PIN                GPIO_Pin_11
 
-// COMM USART1 主副核通信：PA9=TX, PA10=RX (AF7)
-// 注意：PA9/PA10 与 CAM 复用，使用时二者不可同时启用
-#define COMM_UART_PORT         GPIOA
-#define COMM_TX_PIN            GPIO_Pin_9   /* MCU TX -> 副芯片 RX */
-#define COMM_RX_PIN            GPIO_Pin_10  /* MCU RX <- 副芯片 TX */
+// COMM USART5 V307通信：PF5=TX, PE0=RX (AF4)
+// 原 USART1 (PA9/PA10) PCB 有问题，改用原 TOF 接口
+#define COMM_UART_PORT         GPIOF
+#define COMM_TX_PIN            GPIO_Pin_5   /* MCU TX -> V307 RX */
+#define COMM_TX_PINSOURCE      GPIO_PinSource5
+#define COMM_RX_PORT           GPIOE
+#define COMM_RX_PIN            GPIO_Pin_0   /* MCU RX <- V307 TX */
+#define COMM_RX_PINSOURCE      GPIO_PinSource0
+#define COMM_GPIO_AF           GPIO_AF4
 
 
 #endif /* __BOARD_CONFIG_H */

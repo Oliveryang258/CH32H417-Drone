@@ -1,17 +1,15 @@
 /*
- * bsp_comunicate.c — 主副核 USART1 通信驱动
+ * bsp_comunicate.c — V307 通信驱动（USART5）
  *
  * 硬件连接（board_config.h）：
- *   PA9  -> USART1_TX (AF7)  -> 连副芯片 RX
- *   PA10 -> USART1_RX (AF7)  <- 连副芯片 TX
+ *   PF5 -> USART5_TX (AF4) -> 连 V307 RX
+ *   PE0 -> USART5_RX (AF4) <- 连 V307 TX
  *
  * 功能：
- *   1. 初始化 USART1，115200bps，8N1
+ *   1. 初始化 USART5，115200bps，8N1
  *   2. 发送单字节 / 字符串
  *   3. RX 中断接收，存入环形缓冲区
  *   4. 提供上层"每隔1s发送'B'"的 tick 驱动接口
- *
- * 参考官方例程：EXAM/USART/USART_Interrupt/Common/hardware.c
  */
 
 #include "bsp_comunicate.h"
@@ -20,7 +18,7 @@
 /* ------------------------------------------------------------------ */
 /*  IRQ Handler 前置声明（CH32H417 RISC-V 格式）                        */
 /* ------------------------------------------------------------------ */
-void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void USART5_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 
 /* ------------------------------------------------------------------ */
 /*  内部环形接收缓冲区                                                  */
@@ -34,49 +32,50 @@ static volatile uint32_t s_tick_ms     = 0U;
 static uint32_t          s_last_send_ms = 0U;
 
 /* ------------------------------------------------------------------ */
-/*  USART1 初始化                                                       */
+/*  USART5 初始化                                                       */
 /* ------------------------------------------------------------------ */
 void COMM_Init(void)
 {
     GPIO_InitTypeDef  GPIO_InitStructure  = {0};
     USART_InitTypeDef USART_InitStructure = {0};
 
-    /* 1. 开时钟：GPIOA + AFIO 在 HB2；USART1 在 HB2 */
-    RCC_HB2PeriphClockCmd(RCC_HB2Periph_GPIOA  |
-                          RCC_HB2Periph_USART1 |
+    /* 1. 开时钟：GPIOF/GPIOE/AFIO 在 HB2；USART5 在 HB1 */
+    RCC_HB2PeriphClockCmd(RCC_HB2Periph_GPIOF |
+                          RCC_HB2Periph_GPIOE |
                           RCC_HB2Periph_AFIO,   ENABLE);
+    RCC_HB1PeriphClockCmd(RCC_HB1Periph_USART5, ENABLE);
 
-    /* 2. PA9 -> USART1_TX (AF7)，复用推挽输出 */
-    GPIO_PinAFConfig(COMM_UART_PORT, GPIO_PinSource9, GPIO_AF7);
+    /* 2. PF5 -> USART5_TX (AF4)，复用推挽输出 */
+    GPIO_PinAFConfig(COMM_UART_PORT, COMM_TX_PINSOURCE, COMM_GPIO_AF);
     GPIO_InitStructure.GPIO_Pin   = COMM_TX_PIN;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_Very_High;
     GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_AF_PP;
     GPIO_Init(COMM_UART_PORT, &GPIO_InitStructure);
 
-    /* 3. PA10 -> USART1_RX (AF7)，浮空输入 */
-    GPIO_PinAFConfig(COMM_UART_PORT, GPIO_PinSource10, GPIO_AF7);
+    /* 3. PE0 -> USART5_RX (AF4)，浮空输入 */
+    GPIO_PinAFConfig(COMM_RX_PORT, COMM_RX_PINSOURCE, COMM_GPIO_AF);
     GPIO_InitStructure.GPIO_Pin  = COMM_RX_PIN;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(COMM_UART_PORT, &GPIO_InitStructure);
+    GPIO_Init(COMM_RX_PORT, &GPIO_InitStructure);
 
-    /* 4. 配置 USART1：115200, 8N1，收发均开 */
+    /* 4. 配置 USART5：115200, 8N1，收发均开 */
     USART_InitStructure.USART_BaudRate            = COMM_BAUDRATE;
     USART_InitStructure.USART_WordLength          = USART_WordLength_8b;
     USART_InitStructure.USART_StopBits            = USART_StopBits_1;
     USART_InitStructure.USART_Parity              = USART_Parity_No;
     USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_InitStructure.USART_Mode                = USART_Mode_Tx | USART_Mode_Rx;
-    USART_Init(USART1, &USART_InitStructure);
+    USART_Init(USART5, &USART_InitStructure);
 
     /* 5. 使能 RXNE 中断 */
-    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_ITConfig(USART5, USART_IT_RXNE, ENABLE);
 
     /* 6. 使能 NVIC，优先级最高（过流 0xDD 必须抢断 PID ISR） */
-    NVIC_SetPriority(USART1_IRQn, 0x00);
-    NVIC_EnableIRQ(USART1_IRQn);
+    NVIC_SetPriority(USART5_IRQn, 0x00);
+    NVIC_EnableIRQ(USART5_IRQn);
 
-    /* 7. 使能 USART1 外设 */
-    USART_Cmd(USART1, ENABLE);
+    /* 7. 使能 USART5 外设 */
+    USART_Cmd(USART5, ENABLE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -86,8 +85,8 @@ void COMM_Init(void)
 /* 发送单字节，轮询等待 TXE 就绪 */
 void COMM_SendByte(uint8_t byte)
 {
-    USART_SendData(USART1, byte);
-    while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+    USART_SendData(USART5, byte);
+    while(USART_GetFlagStatus(USART5, USART_FLAG_TXE) == RESET);
 }
 
 /* 发送字符串（以 '\0' 结尾） */
@@ -150,15 +149,15 @@ void COMM_Tick(void)
 }
 
 /* ------------------------------------------------------------------ */
-/*  USART1 中断服务程序（CH32H417 RISC-V 格式）                         */
+/*  USART5 中断服务程序（CH32H417 RISC-V 格式）                         */
 /* ------------------------------------------------------------------ */
-void USART1_IRQHandler(void)
+void USART5_IRQHandler(void)
 {
     uint8_t next_head;
 
-    if(USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
+    if(USART_GetITStatus(USART5, USART_IT_RXNE) != RESET)
     {
-        uint8_t data = (uint8_t)USART_ReceiveData(USART1);
+        uint8_t data = (uint8_t)USART_ReceiveData(USART5);
 
         next_head = (s_rx_head + 1U) % COMM_RX_BUF_SIZE;
 

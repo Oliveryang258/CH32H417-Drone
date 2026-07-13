@@ -13,7 +13,6 @@
 #include "debug.h"
 #include "bsp_imu.h"
 #include "bsp_lf.h"
-#include "bsp_tof.h"
 
 extern void XYKF_TickISR(void);
 
@@ -22,7 +21,6 @@ void HardFault_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART4_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void USART5_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 
 /*********************************************************************
  * @fn      NMI_Handler
@@ -98,18 +96,6 @@ void USART4_IRQHandler(void)
 void USART2_IRQHandler(void)
 {
   LF_IRQHandler();
-}
-
-/*********************************************************************
- * @fn      USART5_IRQHandler
- *
- * @brief   This function handles USART5 global interrupt request.
- *
- * @return  none
- */
-void USART5_IRQHandler(void)
-{
-  TOF_IRQHandler();
 }
 
 

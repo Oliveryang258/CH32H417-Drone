@@ -107,6 +107,9 @@ typedef struct
  * 与遥控器 Init.h::NRF_RC_Packet_t 完全对齐，16 字节定长。
  */
 #define RC_PACKET_MAGIC             0x5AU
+#define RC_SW_WAIT                  0U
+#define RC_SW_HEIGHT_HOLD           1U
+#define RC_SW_FLY                   2U
 
 typedef struct
 {
@@ -116,7 +119,7 @@ typedef struct
     int8_t   pitch_stick;    /* 俯仰摇杆 -120 ~ +120 */
     int8_t   yaw_stick;      /* 偏航摇杆 -120 ~ +120 */
     int8_t   throttle_stick; /* 油门摇杆 -120 ~ +120 */
-    uint8_t  sw_status;      /* 拨码：0=Wait, 2=Fly */
+    uint8_t  sw_status;      /* RC mode: 0=Wait, 1=Hover, 2=Fly */
     uint8_t  meg_status;     /* 机械爪：0=Drop, 1=Grab */
     uint8_t  flags;          /* 备用 */
     uint8_t  reserved[6];    /* 对齐 */
@@ -124,6 +127,14 @@ typedef struct
 } __attribute__((packed)) NRF_RC_Packet_t;
 
 #define RC_LINK_TIMEOUT_MS          500U   /* 500ms 没收到 RC 包 → link_ok=0，飞控触发失联保护 */
+
+/* Anonymous optical-flow module 0x34 RANGE frame validation. */
+#define HEIGHT_RANGE_MIN_CM          5UL
+#define HEIGHT_RANGE_MAX_CM          400UL
+#define HEIGHT_TOF_STATE_VALID       0U
+#define HEIGHT_TOF_STATE_SENTINEL    1U
+#define HEIGHT_TOF_STATE_RANGE       2U
+#define HEIGHT_TOF_STATE_AXIS        3U
 
 /* 飞控/遥控器 NRF 物理地址（A1=飞控本机, B1=遥控器） */
 static const uint8_t s_link_drone_addr[5] = {0x34U, 0x43U, 0x10U, 0x10U, 0xA1U};
@@ -165,7 +176,6 @@ static uint32_t s_xykf_last_range_tick = 0UL;
 static uint32_t s_xykf_seen_vendor_count = 0UL;
 static uint32_t s_xykf_last_vendor_tick = 0UL;
 static uint8_t s_xykf_source_prev = 2U;
-
 static void XYKF_AxisInit(XYKF_Axis_t *kf)
 {
     kf->p = 0.0f;
@@ -500,12 +510,15 @@ xykf_publish:
         g_shared_sensor.ekf_px_cm = (float)g_shared_sensor.flow_integ_x_cm;
         g_shared_sensor.ekf_py_cm = (float)g_shared_sensor.flow_integ_y_cm;
         g_shared_sensor.ekf_vx_cmps = of2_valid ?
-                                      (float)g_shared_sensor.flow_dx_fix_cmps : 0.0f;
+            (float)g_shared_sensor.flow_dx_fix_cmps : 0.0f;
         g_shared_sensor.ekf_vy_cmps = of2_valid ?
-                                      (float)g_shared_sensor.flow_dy_fix_cmps : 0.0f;
+            (float)g_shared_sensor.flow_dy_fix_cmps : 0.0f;
         g_shared_sensor.ekf_flags = of2_valid ? 0x21U : 0U;
         g_shared_sensor.ekf_vx_obs_cmps = (float)g_shared_sensor.flow_dx_fix_cmps;
         g_shared_sensor.ekf_vy_obs_cmps = (float)g_shared_sensor.flow_dy_fix_cmps;
+        g_shared_sensor.of2_bias_vx_cmps = 0.0f;
+        g_shared_sensor.of2_bias_vy_cmps = 0.0f;
+        g_shared_sensor.of2_pos_calib_state = 0U;
     } else {
         g_shared_sensor.flow_source_active = 0U;
         g_shared_sensor.ekf_px_cm = s_xkf.p;
@@ -610,27 +623,6 @@ static void Bringup_PrintLF(void)
     }
 }
 
-static void Bringup_PrintTOF(void)
-{
-    const TOF_Data_t *d = TOF_GetData();
-    const TOF_DebugInfo_t *dbg = TOF_GetDebugInfo();
-
-    if (d->in_range && d->state == TOF_STATE_RANGE_VALID)
-    {
-        printf("[TOF ] %u mm (VALID)  ok=%lu err=%lu\r\n",
-               d->distance_mm,
-               (unsigned long)dbg->line_ok_count,
-               (unsigned long)dbg->parse_error_count);
-    }
-    else
-    {
-        printf("[TOF ] %u mm (state=%u)  ok=%lu err=%lu\r\n",
-               d->distance_mm, d->state,
-               (unsigned long)dbg->line_ok_count,
-               (unsigned long)dbg->parse_error_count);
-    }
-}
-
 static void Bringup_PrintNRF(void)
 {
     /* 注意：这里不要再调 NRF_Check()！它会把 TX_ADDR 写成测试值且不还原。 */
@@ -693,7 +685,6 @@ static void Bringup_LinkBuildPacket(BringupLinkPacket_t *pkt)
 {
     const JY61P_Data_t   *imu = IMU_GetData();
     const LF_Data_t      *lf  = LF_GetData();
-    const TOF_Data_t     *tof = TOF_GetData();
     uint32_t range_cm;
 
     pkt->magic       = BRINGUP_LINK_MAGIC;
@@ -725,8 +716,8 @@ static void Bringup_LinkBuildPacket(BringupLinkPacket_t *pkt)
     pkt->gyro_y  = imu->gyro_raw[1];
     pkt->gyro_z  = imu->gyro_raw[2];
 
-    pkt->tof_distance_mm = tof->distance_mm;
-    pkt->tof_state       = tof->state;
+    pkt->tof_distance_mm = g_shared_sensor.tof_distance_mm;
+    pkt->tof_state       = g_shared_sensor.tof_state;
 
     pkt->checksum = Bringup_LinkChecksum(pkt);
 }
@@ -813,6 +804,7 @@ static void Bringup_Run(void)
 {
     uint32_t tick = 0;
     uint32_t last_ack_refresh = 0;
+    uint32_t last_range_sample_count = 0UL;
 
     LED_BUZZ_Init();
     //Bringup_Beep(80, 80, 2);
@@ -838,7 +830,7 @@ static void Bringup_Run(void)
     g_shared_sensor.rc_lost_count= 0UL;
     g_shared_sensor.alarm_flags  = 0U;
     g_shared_sensor.tof_distance_mm = 0xFFFFU;
-    g_shared_sensor.tof_state       = TOF_STATE_NO_UPDATE;
+    g_shared_sensor.tof_state       = 7U;
     g_shared_sensor.tof_valid       = 0U;
     g_shared_sensor.tof_update_tick = 0UL;
     g_shared_sensor.flow_dx_cmps      = 0;
@@ -868,6 +860,9 @@ static void Bringup_Run(void)
     g_shared_sensor.flow_sample_count  = 0UL;
     g_shared_sensor.flow_source_select = 2U;
     g_shared_sensor.flow_source_active = 2U;
+    g_shared_sensor.of2_bias_vx_cmps = 0.0f;
+    g_shared_sensor.of2_bias_vy_cmps = 0.0f;
+    g_shared_sensor.of2_pos_calib_state = 0U;
     g_shared_sensor.lf_range_update_tick = 0UL;
     g_shared_sensor.lf_dbg_irq_count = 0UL;
     g_shared_sensor.lf_dbg_rx_byte_count = 0UL;
@@ -891,16 +886,6 @@ static void Bringup_Run(void)
     else
     {
         printf("[LF  ] init FAILED\r\n");
-    }
-
-    /* TOF */
-    if (TOF_Test_Init() == TOF_OK)
-    {
-        printf("[TOF ] init done\r\n");
-    }
-    else
-    {
-        printf("[TOF ] init FAILED\r\n");
     }
 
     /* NRF：作为 PRX 端，长期 RX 接收遥控器摇杆包；传感器通过 ACK Payload 自动回送 */
@@ -931,7 +916,6 @@ static void Bringup_Run(void)
     while(1)
     {
         tick_global = tick;
-
         /* V5F 心跳：每个主循环迭代都+1（VOFA 调试用） */
         g_shared_sensor.update_tick++;
         g_shared_sensor.calib_time_ms = tick;
@@ -984,31 +968,64 @@ static void Bringup_Run(void)
                 g_shared_sensor.flow_dx_raw      = lf->flow_dx_raw;
                 g_shared_sensor.flow_dy_raw      = lf->flow_dy_raw;
             }
-            if (lf->frame_updated == LF_FRAME_ID_RANGE) {
-                if ((lf->range_valid != 0U) &&
-                    (lf->range_distance_cm != LF_RANGE_INVALID_CM) &&
-                    (lf->range_distance_cm <= 0xFFFEUL)) {
-                    g_shared_sensor.lf_range_distance_cm = (uint16_t)lf->range_distance_cm;
+            LF_ClearDataReady();
+        }
+
+        /* RANGE has its own sequence/timestamp path, independent of the common
+         * LF_DataReady flag used by FLOW/IMU/QUAT frames. */
+        {
+            LF_RangeSample_t range_sample;
+            if (LF_GetRangeSample(&range_sample) &&
+                range_sample.sample_count != last_range_sample_count) {
+                uint8_t range_ok;
+                uint8_t axis_ok;
+                uint8_t tof_state;
+                uint16_t tof_mm = 0xFFFFU;
+                uint32_t source_mark = range_sample.timestamp_ms + 1UL;
+
+                last_range_sample_count = range_sample.sample_count;
+                range_ok = (range_sample.valid != 0U &&
+                            range_sample.distance_cm >= HEIGHT_RANGE_MIN_CM &&
+                            range_sample.distance_cm <= HEIGHT_RANGE_MAX_CM) ? 1U : 0U;
+                /* Anonymous RANGE v3.4 defines the downward source as
+                 * direction=0, angle=0.  Do not interpret another beam as Z. */
+                axis_ok = (range_sample.direction == 0U &&
+                           range_sample.angle_deg == 0U) ? 1U : 0U;
+
+                if (range_sample.valid == 0U) {
+                    tof_state = HEIGHT_TOF_STATE_SENTINEL;
+                } else if (range_ok == 0U) {
+                    tof_state = HEIGHT_TOF_STATE_RANGE;
+                } else if (axis_ok == 0U) {
+                    tof_state = HEIGHT_TOF_STATE_AXIS;
+                } else {
+                    tof_state = HEIGHT_TOF_STATE_VALID;
+                    tof_mm = (uint16_t)(range_sample.distance_cm * 10UL);
+                }
+
+                /* Publish marker last.  V3F treats a marker change as the
+                 * commit point for a coherent source frame. */
+                g_shared_sensor.tof_update_tick = 0UL;
+                __asm__ volatile("fence rw, rw" ::: "memory");
+                g_shared_sensor.tof_valid = 0U;
+                g_shared_sensor.tof_distance_mm = tof_mm;
+                g_shared_sensor.tof_state = tof_state;
+                g_shared_sensor.tof_valid = (tof_state == HEIGHT_TOF_STATE_VALID) ? 1U : 0U;
+                __asm__ volatile("fence rw, rw" ::: "memory");
+                g_shared_sensor.tof_update_tick = source_mark;
+
+                /* Preserve the legacy range feed used by the horizontal OF0
+                 * estimator, while giving it the same per-frame marker. */
+                if (range_ok != 0U && axis_ok != 0U) {
+                    g_shared_sensor.lf_range_distance_cm = (uint16_t)range_sample.distance_cm;
                     g_shared_sensor.lf_range_valid = 1U;
                 } else {
                     g_shared_sensor.lf_range_distance_cm = 0xFFFFU;
                     g_shared_sensor.lf_range_valid = 0U;
                 }
-                g_shared_sensor.lf_range_update_tick = g_shared_sensor.update_tick;
+                g_shared_sensor.lf_range_update_tick = source_mark;
             }
-            LF_ClearDataReady();
         }
-        if (TOF_DataReady())
-        {
-            const TOF_Data_t *tof = TOF_GetData();
-            g_shared_sensor.tof_distance_mm = tof->distance_mm;
-            g_shared_sensor.tof_state = tof->state;
-            g_shared_sensor.tof_valid =
-                (tof->in_range && tof->state == TOF_STATE_RANGE_VALID) ? 1U : 0U;
-            g_shared_sensor.tof_update_tick = g_shared_sensor.update_tick;
-            TOF_ClearDataReady();
-        }
-
         /* 持续 poll RC 包：收到就写共享内存 */
         Bringup_LinkPollRC();
 

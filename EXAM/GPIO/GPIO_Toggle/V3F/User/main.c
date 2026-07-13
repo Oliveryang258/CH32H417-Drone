@@ -77,6 +77,8 @@ volatile float g_flow_pos_x_gain = 0.30f;
 volatile float g_flow_pos_y_gain = 0.30f;
 volatile float g_flow_vel_limit_cmps = 60.0f;
 volatile uint8_t g_flow_reset_target = 0U;
+volatile uint8_t g_flow_stick_vel_enable = 0U;
+volatile float g_flow_stick_vel_limit_cmps = 10.0f;
 /* Temporary velocity-step test: sticks command OF2 X/Y velocity while fs0. */
 
 /* Height hold is deliberately disabled after flashing.  Flight entry also
@@ -336,6 +338,14 @@ static void CMD_Parse(const char *line)
         if (val >= 0.0f && val <= 200.0f) { g_flow_vel_limit_cmps = val; }
     }
     else if (!strncmp(line, "fz", 2)) { g_flow_reset_target = (val > 0.5f) ? 1U : 0U; }
+    else if (!strncmp(line, "ft", 2)) {
+        g_flow_stick_vel_enable = (val > 0.5f) ? 1U : 0U;
+        flow_vel_target_x_cmps = 0.0f;
+        flow_vel_target_y_cmps = 0.0f;
+    }
+    else if (!strncmp(line, "fu", 2)) {
+        if (val >= 2.0f && val <= 30.0f) { g_flow_stick_vel_limit_cmps = val; }
+    }
     else if (!strncmp(line, "ok", 2)) {
         if (val >= -10.0f && val <= 10.0f) { g_of0_kx = val; }
     }
@@ -1312,6 +1322,7 @@ void PID_Tick(void)
                 g_test_motor       = 0U;
                 g_test_ramp_active = 0U;
                 g_test_ramp_start_tick = 0U;
+                g_flow_stick_vel_enable = 0U;
                 soft_stop_active = 0U;
                 soft_stop_start_tick = 0U;
                 s_overspeed_cnt    = 0U;
@@ -1349,6 +1360,7 @@ void PID_Tick(void)
         g_thr_override = 0.0f;
         g_test_ramp_active = 0U;
         g_test_ramp_start_tick = 0U;
+        g_flow_stick_vel_enable = 0U;
         flow_vel_target_x_cmps = 0.0f;
         flow_vel_target_y_cmps = 0.0f;
         out_roll = out_pitch = out_yaw = 0.0f;
@@ -1409,6 +1421,7 @@ void PID_Tick(void)
         uint32_t ekf_age;
         uint8_t flow_ok = 0U;
         uint8_t pos_enable = 0U;
+        uint8_t stick_vel_active = 0U;
 
         if (ekf_mark != ekf_seen_update_tick) {
             ekf_seen_update_tick = ekf_mark;
@@ -1430,6 +1443,7 @@ void PID_Tick(void)
         }
         flow_ok_debug = flow_ok;
         pos_enable = g_flow_pos_enable ? 1U : 0U;
+        stick_vel_active = (flow_ok && g_flow_stick_vel_enable && !pos_enable) ? 1U : 0U;
 
         if (!flow_ok) {
             flow_target_valid = 0U;
@@ -1453,6 +1467,15 @@ void PID_Tick(void)
                 flow_target_valid = 1U;
                 g_flow_reset_target = 0U;
             }
+        } else if (stick_vel_active) {
+            /* Bench-verified installed OF2 axes: X=forward, Y=right.
+             * A zero axis gain keeps that stick in manual attitude control so
+             * an isolated velocity-axis test does not disable the other axis. */
+            flow_vel_target_x_cmps = (g_flow_pitch_gain != 0.0f) ?
+                stick_norm(STICK_PITCH) * g_flow_stick_vel_limit_cmps : 0.0f;
+            flow_vel_target_y_cmps = (g_flow_roll_gain != 0.0f) ?
+                stick_norm(STICK_ROLL) * g_flow_stick_vel_limit_cmps : 0.0f;
+            flow_target_valid = 0U;
         } else {
             flow_target_valid = 0U;
             flow_vel_target_x_cmps = 0.0f;
@@ -1485,9 +1508,9 @@ void PID_Tick(void)
                 float lim = g_flow_angle_limit_deg;
 
                 if (g_shared_sensor.flow_source_active == 2U) {
-                    /* Installed OF2 axes used by the known-good loop: X=right, Y=forward. */
-                    right_err = vx_err_earth;
-                    forward_err = vy_err_earth;
+                    /* Bench-verified installed OF2 axes: X=forward, Y=right. */
+                    forward_err = vx_err_earth;
+                    right_err = vy_err_earth;
                 } else {
                     float yaw_r = g_shared_sensor.yaw * 0.017453293f;
                     float cy = cosf(yaw_r);
@@ -1509,8 +1532,16 @@ void PID_Tick(void)
         static uint8_t s_pid_cycle = 0;
         s_pid_cycle++;
         if (s_pid_cycle & 1U) {
-            float manual_roll_target_deg = stick_norm(STICK_ROLL) * MANUAL_ATT_MAX_DEG;
-            float manual_pitch_target_deg = stick_norm(STICK_PITCH) * MANUAL_ATT_MAX_DEG;
+            uint8_t stick_vel_active = (flow_ok_debug && g_flow_stick_vel_enable &&
+                                         !g_flow_pos_enable) ? 1U : 0U;
+            uint8_t stick_vel_roll_active =
+                (stick_vel_active && g_flow_roll_gain != 0.0f) ? 1U : 0U;
+            uint8_t stick_vel_pitch_active =
+                (stick_vel_active && g_flow_pitch_gain != 0.0f) ? 1U : 0U;
+            float manual_roll_target_deg = stick_vel_roll_active ? 0.0f :
+                stick_norm(STICK_ROLL) * MANUAL_ATT_MAX_DEG;
+            float manual_pitch_target_deg = stick_vel_pitch_active ? 0.0f :
+                stick_norm(STICK_PITCH) * MANUAL_ATT_MAX_DEG;
             ctrl_roll_target_deg = clampf(manual_roll_target_deg + flow_roll_target_deg,
                                           -g_flow_angle_limit_deg,
                                            g_flow_angle_limit_deg);
@@ -1624,6 +1655,7 @@ void PID_Tick(void)
                     g_thr_override = 0.0f;
                     g_test_ramp_active = 0U;
                     g_test_ramp_start_tick = 0U;
+                    g_flow_stick_vel_enable = 0U;
                     flow_vel_target_x_cmps = 0.0f;
                     flow_vel_target_y_cmps = 0.0f;
                     out_roll = out_pitch = out_yaw = 0.0f;
@@ -1802,6 +1834,7 @@ int main(void)
                 g_test_motor       = 0U;
                 g_test_ramp_active = 0U;
                 g_test_ramp_start_tick = 0U;
+                g_flow_stick_vel_enable = 0U;
                 soft_stop_active = 0U;
                 soft_stop_start_tick = 0U;
                 NVIC_EnableIRQ(TIM2_IRQn);
@@ -2013,11 +2046,10 @@ int main(void)
                     vofa[1] = (float)g_shared_sensor.flow_dx_fix_cmps;
                     vofa[2] = (float)g_shared_sensor.flow_dy_cmps;
                     vofa[3] = (float)g_shared_sensor.flow_dy_fix_cmps;
-                    /* Direct command readback: prove fr/fp reached V3 memory. */
-                    vofa[4] = g_flow_roll_gain;
-                    vofa[5] = g_flow_pitch_gain;
+                    vofa[4] = g_shared_sensor.of2_bias_vx_cmps;
+                    vofa[5] = g_shared_sensor.of2_bias_vy_cmps;
                     vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = (float)g_shared_sensor.of2_pos_calib_state;
+                    vofa[7] = (float)flow_ok_debug;
                 } else if (g_vofa_axis == 2U) {
                     /* vd4 vx2: complete position-loop chain. */
                     vofa[0] = flow_pos_target_x_cm;
@@ -2048,8 +2080,8 @@ int main(void)
                     float right;
 
                     if (g_shared_sensor.flow_source_active == 2U) {
-                        right = vx_earth;
-                        forward = vy_earth;
+                        forward = vx_earth;
+                        right = vy_earth;
                     } else {
                         forward = cy * vx_earth + sy * vy_earth;
                         right = -sy * vx_earth + cy * vy_earth;

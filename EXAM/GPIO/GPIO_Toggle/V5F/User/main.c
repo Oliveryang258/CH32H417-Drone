@@ -62,6 +62,15 @@
 #define XYKF_DIAG_RANGE_INVALID     23U
 #define XYKF_DIAG_RANGE_TOO_LOW     24U
 #define XYKF_DIAG_RANGE_TOO_HIGH    25U
+#define OF2_BIAS_CAL_TICKS           (20U * XYKF_RATE_HZ)
+#define OF2_BIAS_MIN_TICKS           (5U * XYKF_RATE_HZ)
+#define OF2_BIAS_MAX_GYRO_DPS        1.5f
+#define OF2_BIAS_MAX_FIX_VEL_CMPS    1.0f
+#define OF2_BIAS_MAX_DISP_CM         10.0f
+#define OF2_BIAS_LIMIT_CMPS          10.0f
+#define OF2_STATIONARY_GYRO_DPS      1.5f
+#define OF2_STATIONARY_VEL_CMPS      0.5f
+#define OF2_STATIONARY_TICKS         ((300U * XYKF_RATE_HZ) / 1000U)
 #define BRINGUP_LINK_CHANNEL        40U     /* 必须与遥控器一致 */
 
 /*
@@ -176,6 +185,56 @@ static uint32_t s_xykf_last_range_tick = 0UL;
 static uint32_t s_xykf_seen_vendor_count = 0UL;
 static uint32_t s_xykf_last_vendor_tick = 0UL;
 static uint8_t s_xykf_source_prev = 2U;
+static uint32_t s_of2_cal_start_tick = 0UL;
+static int16_t s_of2_cal_start_x_cm = 0;
+static int16_t s_of2_cal_start_y_cm = 0;
+static float s_of2_cal_sum_vx_cmps = 0.0f;
+static float s_of2_cal_sum_vy_cmps = 0.0f;
+static uint32_t s_of2_cal_sample_count = 0UL;
+static float s_of2_bias_vx_cmps = 0.0f;
+static float s_of2_bias_vy_cmps = 0.0f;
+static uint8_t s_of2_cal_state = 0U;
+static uint8_t s_of2_flying_prev = 0U;
+static float s_of2_pos_x_cm = 0.0f;
+static float s_of2_pos_y_cm = 0.0f;
+static uint16_t s_of2_stationary_ticks = 0U;
+static int16_t s_of2_origin_x_cm = 0;
+static int16_t s_of2_origin_y_cm = 0;
+static int16_t s_of2_last_raw_x_cm = 0;
+static int16_t s_of2_last_raw_y_cm = 0;
+static float s_of2_stationary_offset_x_cm = 0.0f;
+static float s_of2_stationary_offset_y_cm = 0.0f;
+
+static void OF2_BiasCalReset(void)
+{
+    s_of2_cal_start_tick = 0UL;
+    s_of2_cal_state = 0U;
+    s_of2_cal_sum_vx_cmps = 0.0f;
+    s_of2_cal_sum_vy_cmps = 0.0f;
+    s_of2_cal_sample_count = 0UL;
+    s_of2_bias_vx_cmps = 0.0f;
+    s_of2_bias_vy_cmps = 0.0f;
+}
+
+static void OF2_BiasCalFinish(void)
+{
+    float bx;
+    float by;
+
+    if (s_of2_cal_sample_count < OF2_BIAS_MIN_TICKS) {
+        return;
+    }
+    bx = s_of2_cal_sum_vx_cmps / (float)s_of2_cal_sample_count;
+    by = s_of2_cal_sum_vy_cmps / (float)s_of2_cal_sample_count;
+    if (fabsf(bx) <= OF2_BIAS_LIMIT_CMPS && fabsf(by) <= OF2_BIAS_LIMIT_CMPS) {
+        s_of2_bias_vx_cmps = bx;
+        s_of2_bias_vy_cmps = by;
+        s_of2_cal_state = 2U;
+    } else {
+        OF2_BiasCalReset();
+    }
+}
+
 static void XYKF_AxisInit(XYKF_Axis_t *kf)
 {
     kf->p = 0.0f;
@@ -240,6 +299,17 @@ static void XYKF_Init(void)
     s_xykf_seen_vendor_count = 0UL;
     s_xykf_last_vendor_tick = 0UL;
     s_xykf_source_prev = 2U;
+    OF2_BiasCalReset();
+    s_of2_flying_prev = 0U;
+    s_of2_pos_x_cm = 0.0f;
+    s_of2_pos_y_cm = 0.0f;
+    s_of2_stationary_ticks = 0U;
+    s_of2_origin_x_cm = 0;
+    s_of2_origin_y_cm = 0;
+    s_of2_last_raw_x_cm = 0;
+    s_of2_last_raw_y_cm = 0;
+    s_of2_stationary_offset_x_cm = 0.0f;
+    s_of2_stationary_offset_y_cm = 0.0f;
 }
 
 static void XYKF_TimerInit(void)
@@ -305,6 +375,8 @@ void XYKF_TickISR(void)
         s_xykf_calibrated = 0U;
         s_xykf_no_flow_ticks = 0U;
         s_xykf_flow_recent_ticks = 0U;
+        OF2_BiasCalReset();
+        s_of2_flying_prev = 0U;
     }
     if (imu_dbg->accel_frame_count != s_xykf_seen_accel_count) {
         s_xykf_seen_accel_count = imu_dbg->accel_frame_count;
@@ -505,20 +577,127 @@ xykf_publish:
                              g_shared_sensor.flow_valid != 0U &&
                              g_shared_sensor.flow_quality >= XYKF_FLOW_MIN_QUALITY &&
                              of2_recent != 0U) ? 1U : 0U;
+        uint8_t flying = (((g_shared_sensor.rc_sw == RC_SW_FLY) ||
+                           (g_shared_sensor.rc_sw == RC_SW_HEIGHT_HOLD)) &&
+                          (g_shared_sensor.rc_link_ok != 0U)) ? 1U : 0U;
+        float gyro_max_of2 = fabsf(g_shared_sensor.gyro_dps[0]);
+        /* Vendor guidance: DX_2/DY_2 drive the velocity loop; FIX is for integration. */
+        float vx_corr = (float)g_shared_sensor.flow_dx_cmps - s_of2_bias_vx_cmps;
+        float vy_corr = (float)g_shared_sensor.flow_dy_cmps - s_of2_bias_vy_cmps;
+
+        if (fabsf(g_shared_sensor.gyro_dps[1]) > gyro_max_of2) {
+            gyro_max_of2 = fabsf(g_shared_sensor.gyro_dps[1]);
+        }
+        if (fabsf(g_shared_sensor.gyro_dps[2]) > gyro_max_of2) {
+            gyro_max_of2 = fabsf(g_shared_sensor.gyro_dps[2]);
+        }
+        if (!flying) {
+            uint8_t stationary = (of2_valid &&
+                                  gyro_max_of2 <= OF2_BIAS_MAX_GYRO_DPS &&
+                                  fabsf((float)g_shared_sensor.flow_dx_fix_cmps) <= OF2_BIAS_MAX_FIX_VEL_CMPS &&
+                                  fabsf((float)g_shared_sensor.flow_dy_fix_cmps) <= OF2_BIAS_MAX_FIX_VEL_CMPS) ? 1U : 0U;
+
+            if (s_of2_flying_prev) {
+                OF2_BiasCalReset();
+            }
+            if (stationary) {
+                if (s_of2_cal_state == 0U) {
+                    s_of2_cal_start_tick = s_xykf_tick;
+                    s_of2_cal_start_x_cm = g_shared_sensor.flow_integ_x_cm;
+                    s_of2_cal_start_y_cm = g_shared_sensor.flow_integ_y_cm;
+                    s_of2_cal_sum_vx_cmps = (float)g_shared_sensor.flow_dx_cmps;
+                    s_of2_cal_sum_vy_cmps = (float)g_shared_sensor.flow_dy_cmps;
+                    s_of2_cal_sample_count = 1UL;
+                    s_of2_cal_state = 1U;
+                } else if (s_of2_cal_state == 1U) {
+                    float dx = (float)g_shared_sensor.flow_integ_x_cm - (float)s_of2_cal_start_x_cm;
+                    float dy = (float)g_shared_sensor.flow_integ_y_cm - (float)s_of2_cal_start_y_cm;
+                    uint32_t elapsed_ticks = s_xykf_tick - s_of2_cal_start_tick;
+                    if (fabsf(dx) > OF2_BIAS_MAX_DISP_CM || fabsf(dy) > OF2_BIAS_MAX_DISP_CM) {
+                        OF2_BiasCalReset();
+                    } else {
+                        s_of2_cal_sum_vx_cmps += (float)g_shared_sensor.flow_dx_cmps;
+                        s_of2_cal_sum_vy_cmps += (float)g_shared_sensor.flow_dy_cmps;
+                        s_of2_cal_sample_count++;
+                        if (elapsed_ticks >= OF2_BIAS_CAL_TICKS) {
+                            OF2_BiasCalFinish();
+                        }
+                    }
+                }
+            } else if (s_of2_cal_state != 2U) {
+                OF2_BiasCalReset();
+            }
+
+            /* Follow the raw origin while disarmed so the published position is exactly zero. */
+            s_of2_pos_x_cm = 0.0f;
+            s_of2_pos_y_cm = 0.0f;
+            s_of2_stationary_ticks = 0U;
+            s_of2_origin_x_cm = g_shared_sensor.flow_integ_x_cm;
+            s_of2_origin_y_cm = g_shared_sensor.flow_integ_y_cm;
+            s_of2_last_raw_x_cm = g_shared_sensor.flow_integ_x_cm;
+            s_of2_last_raw_y_cm = g_shared_sensor.flow_integ_y_cm;
+            s_of2_stationary_offset_x_cm = 0.0f;
+            s_of2_stationary_offset_y_cm = 0.0f;
+            g_shared_sensor.ekf_px_cm = s_of2_pos_x_cm;
+            g_shared_sensor.ekf_py_cm = s_of2_pos_y_cm;
+        } else {
+            if (!s_of2_flying_prev) {
+                if (s_of2_cal_state == 1U) {
+                    OF2_BiasCalFinish();
+                }
+                s_of2_pos_x_cm = 0.0f;
+                s_of2_pos_y_cm = 0.0f;
+                s_of2_stationary_ticks = 0U;
+                s_of2_origin_x_cm = g_shared_sensor.flow_integ_x_cm;
+                s_of2_origin_y_cm = g_shared_sensor.flow_integ_y_cm;
+                s_of2_last_raw_x_cm = g_shared_sensor.flow_integ_x_cm;
+                s_of2_last_raw_y_cm = g_shared_sensor.flow_integ_y_cm;
+                s_of2_stationary_offset_x_cm = 0.0f;
+                s_of2_stationary_offset_y_cm = 0.0f;
+            }
+
+            if (of2_valid &&
+                gyro_max_of2 < OF2_STATIONARY_GYRO_DPS &&
+                fabsf(vx_corr) < OF2_STATIONARY_VEL_CMPS &&
+                fabsf(vy_corr) < OF2_STATIONARY_VEL_CMPS) {
+                if (s_of2_stationary_ticks < OF2_STATIONARY_TICKS) {
+                    s_of2_stationary_ticks++;
+                }
+            } else {
+                s_of2_stationary_ticks = 0U;
+            }
+
+            if (s_of2_stationary_ticks >= OF2_STATIONARY_TICKS) {
+                s_of2_stationary_offset_x_cm +=
+                    (float)(g_shared_sensor.flow_integ_x_cm - s_of2_last_raw_x_cm);
+                s_of2_stationary_offset_y_cm +=
+                    (float)(g_shared_sensor.flow_integ_y_cm - s_of2_last_raw_y_cm);
+                vx_corr = 0.0f;
+                vy_corr = 0.0f;
+            }
+            s_of2_last_raw_x_cm = g_shared_sensor.flow_integ_x_cm;
+            s_of2_last_raw_y_cm = g_shared_sensor.flow_integ_y_cm;
+            s_of2_pos_x_cm =
+                (float)(g_shared_sensor.flow_integ_x_cm - s_of2_origin_x_cm) -
+                s_of2_stationary_offset_x_cm;
+            s_of2_pos_y_cm =
+                (float)(g_shared_sensor.flow_integ_y_cm - s_of2_origin_y_cm) -
+                s_of2_stationary_offset_y_cm;
+            g_shared_sensor.ekf_px_cm = s_of2_pos_x_cm;
+            g_shared_sensor.ekf_py_cm = s_of2_pos_y_cm;
+            s_of2_cal_state = 3U;
+        }
+        s_of2_flying_prev = flying;
 
         g_shared_sensor.flow_source_active = 2U;
-        g_shared_sensor.ekf_px_cm = (float)g_shared_sensor.flow_integ_x_cm;
-        g_shared_sensor.ekf_py_cm = (float)g_shared_sensor.flow_integ_y_cm;
-        g_shared_sensor.ekf_vx_cmps = of2_valid ?
-            (float)g_shared_sensor.flow_dx_fix_cmps : 0.0f;
-        g_shared_sensor.ekf_vy_cmps = of2_valid ?
-            (float)g_shared_sensor.flow_dy_fix_cmps : 0.0f;
+        g_shared_sensor.ekf_vx_cmps = of2_valid ? vx_corr : 0.0f;
+        g_shared_sensor.ekf_vy_cmps = of2_valid ? vy_corr : 0.0f;
         g_shared_sensor.ekf_flags = of2_valid ? 0x21U : 0U;
-        g_shared_sensor.ekf_vx_obs_cmps = (float)g_shared_sensor.flow_dx_fix_cmps;
-        g_shared_sensor.ekf_vy_obs_cmps = (float)g_shared_sensor.flow_dy_fix_cmps;
-        g_shared_sensor.of2_bias_vx_cmps = 0.0f;
-        g_shared_sensor.of2_bias_vy_cmps = 0.0f;
-        g_shared_sensor.of2_pos_calib_state = 0U;
+        g_shared_sensor.ekf_vx_obs_cmps = (float)g_shared_sensor.flow_dx_cmps;
+        g_shared_sensor.ekf_vy_obs_cmps = (float)g_shared_sensor.flow_dy_cmps;
+        g_shared_sensor.of2_bias_vx_cmps = s_of2_bias_vx_cmps;
+        g_shared_sensor.of2_bias_vy_cmps = s_of2_bias_vy_cmps;
+        g_shared_sensor.of2_pos_calib_state = s_of2_cal_state;
     } else {
         g_shared_sensor.flow_source_active = 0U;
         g_shared_sensor.ekf_px_cm = s_xkf.p;

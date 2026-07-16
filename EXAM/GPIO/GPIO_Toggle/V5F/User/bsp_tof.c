@@ -54,8 +54,6 @@
 static TOF_Data_t s_tof_data = {0};
 
 /* 调试统计信息 */
-static TOF_DebugInfo_t s_debug_info = {0};
-
 /* 数据就绪标志 */
 static volatile uint8_t s_data_ready = 0;
 
@@ -107,7 +105,6 @@ TOF_Status_t TOF_InitEx(const TOF_Config_t *cfg)
 
     /* 清空数据 */
     memset(&s_tof_data, 0, sizeof(s_tof_data));
-    memset(&s_debug_info, 0, sizeof(s_debug_info));
     s_tof_data.distance_mm = TOF_RANGE_INVALID_MM;
     s_tof_data.state = TOF_STATE_NO_UPDATE;
     s_data_ready = 0;
@@ -122,13 +119,12 @@ TOF_Status_t TOF_InitEx(const TOF_Config_t *cfg)
 }
 
 /**
- * @brief  使用默认配置初始化 TOF 驱动（测试用）
+ * @brief  使用默认配置初始化 TOF 驱动
  */
-TOF_Status_t TOF_Test_Init(void)
+TOF_Status_t TOF_Init(void)
 {
     TOF_Config_t cfg;
     TOF_GetDefaultConfig(&cfg);
-    cfg.enable_log = 1;
     return TOF_InitEx(&cfg);
 }
 
@@ -141,35 +137,6 @@ void TOF_Process(void)
 }
 
 /**
- * @brief  TOF 测试处理函数（自动打印接收到的数据）
- */
-void TOF_Test_Process(void)
-{
-    if (TOF_DataReady())
-    {
-        const TOF_Data_t *d = TOF_GetData();
-        const TOF_DebugInfo_t *dbg = TOF_GetDebugInfo();
-
-        if (d->in_range && d->state == TOF_STATE_RANGE_VALID)
-        {
-            printf("[TOF] distance=%u mm  state=%u(VALID)  ok=%lu err=%lu\r\n",
-                   d->distance_mm, d->state,
-                   (unsigned long)dbg->line_ok_count,
-                   (unsigned long)dbg->parse_error_count);
-        }
-        else
-        {
-            printf("[TOF] distance=%u mm  state=%u(INVALID)  ok=%lu err=%lu\r\n",
-                   d->distance_mm, d->state,
-                   (unsigned long)dbg->line_ok_count,
-                   (unsigned long)dbg->parse_error_count);
-        }
-
-        TOF_ClearDataReady();
-    }
-}
-
-/**
  * @brief  USART 中断服务函数（在对应 USART_IRQHandler 中调用）
  */
 void TOF_IRQHandler(void)
@@ -177,42 +144,17 @@ void TOF_IRQHandler(void)
     uint16_t statr;
     uint8_t rx_byte;
 
-    s_debug_info.irq_count++;
-
     statr = USART_GetFlagStatus(TOF_USART, USART_FLAG_RXNE);
     if (statr)
     {
         /* 读取数据寄存器（自动清除 RXNE 标志） */
         rx_byte = (uint8_t)USART_ReceiveData(TOF_USART);
-        s_debug_info.rx_byte_count++;
-        s_debug_info.last_rx_byte = rx_byte;
 
         /* 检查 USART 错误标志 */
         statr = TOF_USART->STATR;
-        s_debug_info.last_statr = statr;
 
         if (statr & (USART_FLAG_ORE | USART_FLAG_NE | USART_FLAG_FE | USART_FLAG_PE))
         {
-            s_debug_info.usart_error_count++;
-            s_debug_info.err_byte_count++;
-
-            if (statr & USART_FLAG_ORE)
-            {
-                s_debug_info.ore_count++;
-            }
-            if (statr & USART_FLAG_NE)
-            {
-                s_debug_info.ne_count++;
-            }
-            if (statr & USART_FLAG_FE)
-            {
-                s_debug_info.fe_count++;
-            }
-            if (statr & USART_FLAG_PE)
-            {
-                s_debug_info.pe_count++;
-            }
-
             /* 清除错误标志（读 SR 再读 DR 已完成） */
             return;
         }
@@ -239,7 +181,6 @@ void TOF_IRQHandler(void)
             else
             {
                 /* 行缓冲溢出，丢弃当前行 */
-                s_debug_info.overflow_count++;
                 s_rx_line_pos = 0;
             }
         }
@@ -268,14 +209,6 @@ void TOF_ClearDataReady(void)
 const TOF_Data_t *TOF_GetData(void)
 {
     return &s_tof_data;
-}
-
-/**
- * @brief  获取调试统计信息
- */
-const TOF_DebugInfo_t *TOF_GetDebugInfo(void)
-{
-    return &s_debug_info;
 }
 
 /* ==================== 私有函数实现 ==================== */
@@ -368,11 +301,6 @@ static void TOF_ParseLine(const char *line)
             }
 
             updated = 1;
-            s_debug_info.line_ok_count++;
-        }
-        else
-        {
-            s_debug_info.parse_error_count++;
         }
     }
     /* 解析 "State:X,..." */
@@ -384,19 +312,8 @@ static void TOF_ParseLine(const char *line)
         if (value >= 0 && value <= 255)
         {
             s_tof_data.state = (uint8_t)value;
-            s_debug_info.last_state = (uint8_t)value;
             updated = 1;
-            s_debug_info.line_ok_count++;
         }
-        else
-        {
-            s_debug_info.parse_error_count++;
-        }
-    }
-    else
-    {
-        /* 未识别的行格式 */
-        s_debug_info.parse_error_count++;
     }
 
     /* 如果解析成功，设置数据就绪标志 */

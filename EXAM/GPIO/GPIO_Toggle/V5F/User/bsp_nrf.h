@@ -172,12 +172,6 @@ NRF_Status_t NRF_Config(const NRF_Config_t *cfg);
 uint8_t NRF_Check(void);
 
 /**
- * @brief  完整诊断：打印 CSN toggle / SPI STATUS / CONFIG / TX_ADDR 读写测试。
- *         在 NRF_Check 前后调用，帮助定位 SPI 通信或供电问题。
- */
-void NRF_Diagnose(void);
-
-/**
  * @brief  将 NRF 切换为 TX 模式。
  */
 void NRF_SetMode_TX(void);

@@ -5,20 +5,21 @@
 #include "bsp_vofa.h"
 #include "shared_data.h"
 #include "bsp_led_buzz.h"
+#include "bsp_height.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 
-/* ---- 调参参数（可通过 VOFA Commander 在线修改�?---- */
+/* ---- 调参参数（可通过 VOFA Commander 在线修改）---- */
 /* 注意：当前全部置 0 用于油门直通测试，
- *       PID 调试架后通过 VOFA Commander �?rp/rd... 命令开�?*/
-volatile float g_kp_roll  = 0.65f;
+ *       PID 调试架后通过 VOFA Commander 的 rp/rd... 命令开启 */
+volatile float g_kp_roll  = 0.70f;
 volatile float g_ki_roll  = 0.0f;
-volatile float g_kd_roll  = 0.0f;
+volatile float g_kd_roll  = 0.002f;
 
-volatile float g_kp_pitch = 0.65f;
+volatile float g_kp_pitch = 0.70f;
 volatile float g_ki_pitch = 0.0f;
-volatile float g_kd_pitch = 0.0f;
+volatile float g_kd_pitch = 0.002f;
 
 /* Rate-setpoint feedforward, in motor-output us per deg/s. */
 volatile float g_roll_rate_ff  = 0.0f;
@@ -31,7 +32,7 @@ volatile float g_kp_yaw_angle = 0.0f;
 volatile float g_yaw_ff_gain = -0.22f;
 volatile float g_yaw_ff_limit = 20.0f;
 
-/* 油门覆盖0 时忽略摇杆，固定油门值（用于 PID 调试架） = 使用摇杆 */
+/* 油门覆盖：!=0 时忽略摇杆，固定油门值（用于 PID 调试架）；=0 时使用摇杆 */
 volatile float g_thr_override = 0.0f;
 volatile uint16_t g_thr_rc_max_us = 1490U;
 
@@ -42,24 +43,14 @@ volatile float g_pitch_angle_rate_limit = 60.0f;
 volatile float g_kp_roll_angle = 2.0f;
 volatile float g_roll_angle_rate_limit = 60.0f;
 
-#define VOFA_AXIS_ROLL   0U
-#define VOFA_AXIS_PITCH  1U
-#define VOFA_AXIS_YAW    2U
-#define VOFA_VIEW_CONTROL 0U
-#define VOFA_VIEW_IMU     1U
-#define VOFA_VIEW_FLOW    2U
-#define VOFA_VIEW_CALIB   3U
-#define VOFA_VIEW_EKFCTL  4U
-#define VOFA_VIEW_HEIGHT  5U
-
 volatile uint8_t g_vofa_axis = VOFA_AXIS_ROLL;
 volatile uint8_t g_vofa_view = VOFA_VIEW_CONTROL;
 volatile uint16_t g_vofa_rate_hz = 50U;
 volatile uint8_t g_vofa_enable = 1U;
 
-/* 单电机测试模式：0 = 正常飞行（PID + 混控）；1~4 = 仅控制对应电机，其他三路恒为 PWM_MIN_PULSE_US�?
- * �?VOFA Commander �?tm1/tm2/tm3/tm4 选电机，tm0 退出测试�?
- * 测试模式下油门摇�?�?选中电机 PWM 直通（�?PID 无缓变），tr 命令仍可强制固定 PWM�?*/
+/* 单电机测试模式：0 = 正常飞行（PID + 混控）；1~4 = 仅控制对应电机，其他三路恒为 PWM_MIN_PULSE_US。
+ * 用 VOFA Commander 的 tm1/tm2/tm3/tm4 选电机，tm0 退出测试。
+ * 测试模式下油门摇杆控制选中电机 PWM 直通（无 PID 无缓变），tr 命令仍可强制固定 PWM。*/
 volatile uint8_t g_test_motor = 0U;
 
 volatile uint16_t g_motor_slew_us = 17U;
@@ -92,6 +83,7 @@ volatile float g_hover_throttle_us = 1400.0f;        /* nominal/fallback; ACTIVE
 volatile float g_height_corr_limit_us = 15.0f;       /* tuned collective correction authority */
 volatile float g_height_vz_up_max_mps = 0.15f;
 volatile float g_height_vz_down_max_mps = 0.15f;
+volatile float g_height_stick_rate_mps = 0.10f;       /* max pilot climb/descent speed */
 
 volatile float g_of0_kx = 1.0f;
 volatile float g_of0_ky = 1.0f;
@@ -104,13 +96,13 @@ volatile uint32_t g_sys_tick = 0;  /* Milliseconds accumulated by the 150 Hz TIM
 volatile uint8_t  g_test_ramp_active = 0U;
 volatile uint32_t g_test_ramp_start_tick = 0U;
 
-/* ---- PID 运行时状态（文件级静态，PID_Tick() �?main 共享�?--- */
+/* ---- PID 运行时状态（文件级静态，PID_Tick() 与 main 共享）---- */
 static uint8_t  s_armed = 0U;
 static PID_t    pid_roll, pid_pitch, pid_yaw;
 static float    out_roll, out_pitch, out_yaw;
 static float    roll_rate_ff_out, pitch_rate_ff_out;
 static float    yaw_ff_out;
-static float    thr_base;
+float    thr_base;
 static float    pitch_angle_rate_sp, roll_angle_rate_sp, yaw_angle_rate_sp;
 static float    gyro_roll_ctrl_dps = 0.0f;
 static float    gyro_pitch_ctrl_dps = 0.0f;
@@ -118,14 +110,10 @@ static float    yaw_angle_target = 0.0f;
 static float    yaw_angle_error = 0.0f;
 static uint16_t prev_pwm[4] = {PWM_MIN_PULSE_US, PWM_MIN_PULSE_US,
                                PWM_MIN_PULSE_US, PWM_MIN_PULSE_US};
-static uint8_t  soft_stop_active = 0U;
+uint8_t  soft_stop_active = 0U;
 static uint32_t soft_stop_start_tick = 0U;
 static uint16_t soft_stop_start_pwm[4] = {PWM_MIN_PULSE_US, PWM_MIN_PULSE_US,
                                           PWM_MIN_PULSE_US, PWM_MIN_PULSE_US};
-static float    height_guard_cap_us = 0.0f;
-static uint16_t height_guard_high_ms = 0U;
-static uint32_t height_guard_seen_tof_tick = 0UL;
-static uint32_t height_guard_seen_local_ms = 0UL;
 static uint32_t sensor_seen_update_tick = 0UL;
 static uint32_t sensor_seen_local_ms = 0UL;
 
@@ -171,34 +159,95 @@ static float OF0_GetHeightCm(void)
     return 0.0f;
 }
 
-#define HEIGHT_GUARD_LOW_MM       250U
-#define HEIGHT_GUARD_HIGH_MM      350U
-#define HEIGHT_GUARD_SOFTSTOP_MM  500U
-#define HEIGHT_GUARD_HOLD_MS      200U
-#define HEIGHT_GUARD_TOF_STALE_MS 250U
-
-volatile uint8_t g_height_guard_enable = 0U;
-#define STICK_THROTTLE   (g_shared_sensor.rc_pitch)
 #define STICK_PITCH      (g_shared_sensor.rc_throttle)
 #define STICK_ROLL       (g_shared_sensor.rc_roll)
 #define STICK_YAW        (g_shared_sensor.rc_yaw)
 
 /*
- * Commander commands:
- *   rp/ri/rd, pp/pi/pd, yp/yi/yd: rate-loop gains
- *   rf/pf: roll/pitch rate-setpoint feedforward gains
- *   ra/pa/ya: attitude-loop P gains
- *   yf/yl: yaw throttle feedforward gain/limit
- *   rl/al: roll/pitch attitude rate limits
- *   tr, tx, vo, vx, vd, vf, hp, fo/fs/fr/fp/fl/fq/fx/fy/fv/fz/ft/fu, sl, pl, gr, tm
- *   ze/zp/zv/zi/zh/zl/zu/zd: height enable and conservative tuning
+ * CMD_Parse — 串口在线调参命令解析（VOFA Commander 协议扩展）
+ * ============================================================================
+ * 格式：<命令2字符><值>，例如 "rp1.5" 设置 roll P=1.5，值会被 strtof 转为 float。
+ * 单字符命令 B/A 直接转发给 V307 控制摄像头开关。
+ *
+ * 命令分类速查 ===
+ *
+ * 【姿态内环 PID — roll (r_) / pitch (p_) / yaw (y_)】
+ *   rp/ri/rd — roll  P/I/D（角速度环）
+ *   pp/pi/pd — pitch P/I/D（角速度环）
+ *   yp/yi/yd — yaw   P/I/D（角速度环）
+ *
+ * 【姿态内环 速率前馈 — rf/pf】
+ *   rf — roll  rate FF gain（角速度期望*RF → 直接加到输出，补偿相位滞后）
+ *   pf — pitch rate FF gain
+ *
+ * 【姿态外环 P + 速率限幅 — ra/pa/ya, rl/al】
+ *   ra — roll  angle P gain（角度误差→角速度期望，deg→deg/s）
+ *   pa — pitch angle P gain
+ *   ya — yaw   angle P gain（偏航锁定 P，会叠加 I 消静差）
+ *   rl — roll  angle rate limit (deg/s)，角速度期望上限
+ *   al — pitch angle rate limit (deg/s)
+ *
+ * 【偏航前馈 — yf/yl】
+ *   yf — yaw FF gain（油门→yaw 补偿比例，负值补偿 CW 桨反扭）
+ *   yl — yaw FF limit (us)，前馈输出上限
+ *
+ * 【油门 — tr/tx】
+ *   tr — throttle override (us)，固定油门值，>1 即覆盖 RC 摇杆，PID 调试架用
+ *   tx — throttle RC max (us)，RC 摇杆上半段终点，默认 1490
+ *
+ * 【VOFA 遥测 — vo/vx/vd/vf】
+ *   vo — VOFA 遥测开关 (0/1)
+ *   vx — VOFA 坐标轴选择 (0=roll, 1=pitch, 2=yaw, 3=3D)
+ *   vd — VOFA 视图选择 (0=Control, 1=IMU, 2=Flow, 3=Calib, 4=EKFCTL, 5=Height)
+ *   vf — VOFA 发送频率 (50/100/150/200 Hz)
+ *   vt — 标定测试标志 (0=idle, 1=fwd, 2=back, 3=right, 4=left)，由 V5F 读取
+ *
+ * 【光流控制 — fo/fs/fm/fr/fp/fl/fq/fx/fy/fv/fz/ft/fu】
+ *   fo — 光流使能 (0/1)，启用速度环
+ *   fs — 光流位置模式 (0/1)，位置环 + 速度环，优先级高于 ft
+ *   fm — 光流源选择 (0=OF0 融合, 2=OF2 厂商)，切换时自动复位位置目标
+ *   fr — 光流 roll  gain（cm/s → deg）
+ *   fp — 光流 pitch gain（cm/s → deg）
+ *   fl — 光流角度上限 (deg)，光流输出的最大倾角
+ *   fq — 光流最小质量阈值 (0~255)，低于此值不信任光流
+ *   fx — 光流位置 X P gain（cm → cm/s）
+ *   fy — 光流位置 Y P gain（cm → cm/s）
+ *   fv — 光流速度上限 (cm/s)
+ *   fz — 光流位置目标复位 (0→1 触发)
+ *   ft — 光流摇杆速度模式 (0/1)，stick → 速度指令，fs=0 时生效
+ *   fu — 光流摇杆速度上限 (cm/s)
+ *
+ * 【OF0 互补滤波参数 — o(k/y/a/g/h)】
+ *   ok — OF0 kx factor，像素→cm/s 的 X 轴换算系数
+ *   oy — OF0 ky factor，像素→cm/s 的 Y 轴换算系数
+ *   oa — OF0 alpha (0~1)，互补滤波系数，越大越信光流原始值
+ *   og — OF0 gyro comp X，光流自旋补偿 X 系数
+ *   oh — OF0 gyro comp Y，光流自旋补偿 Y 系数
+ *
+ * 【高度控制 — ze/zp/zv/zi/zh/zl/zu/zd/ha/hp】
+ *   ze — 高度使能 (0/1)，仅未 armed 时可改，与 hp 互斥
+ *   zp — 高度 P gain（位置环：高度误差 m → 速度期望 m/s）
+ *   zv — 高度 V P gain（速度环：速度误差 m/s → 油门 us）
+ *   zi — 高度 V I gain（速度环积分，消高度静差）
+ *   zh — 悬停油门 (us)，hover 悬停时的基准油门值
+ *   zl — 高度油门修正上限 (us)，高度环输出限幅
+ *   zu — 高度上升最大速度 (m/s)
+ *   zd — 高度下降最大速度 (m/s)
+ *   ha — 高度摇杆速率 (m/s per full stick)，摇杆映射到高度速度
+ *   hp — 高度保护使能 (0/1)，TOF 硬高度下限，与 ze 互斥
+ *
+ * 【系统 — sl/pl/gr/tm】
+ *   sl — PWM slew 限幅 (us/s)，防桨叶松脱，默认 100
+ *   pl — PID 输出限幅 (us)，三轴 PID 修正量上限，默认 180
+ *   gr — 油门缓升测试 (0→1 触发)，5 秒 1000→1550us
+ *   tm — 单电机测试 (0=关, 1~4=选中电机直通 thr_base)
  */
 static void CMD_Parse(const char *line)
 {
     float val;
     if (line[0] == '\0') return;
 
-    /* 单字符命令：B->开启摄像头, A->关闭摄像头 (转发给 V307) */
+    /* 单字符命令：B→开启摄像头, A→关闭摄像头（转发给 V307） */
     if (line[1] == '\0') {
         if (line[0] == 'B') { COMM_SendByte('B'); return; }
         if (line[0] == 'A') { COMM_SendByte('A'); return; }
@@ -206,12 +255,16 @@ static void CMD_Parse(const char *line)
 
     if (line[1] == '\0') return;
     val = strtof(line + 2, NULL);
+
+    /* === 光流：摇杆速度增益 wp/wr === */
     if      (!strncmp(line, "wp", 2)) {
         if (val >= -0.20f && val <= 0.20f) { g_flow_pitch_gain = val; }
     }
     else if (!strncmp(line, "wr", 2)) {
         if (val >= -0.20f && val <= 0.20f) { g_flow_roll_gain = val; }
     }
+
+    /* === 内环 PID：roll/pitch/yaw 角速度环 === */
     else if (!strncmp(line, "rp", 2)) { g_kp_roll  = val; }
     else if (!strncmp(line, "ri", 2)) { g_ki_roll  = val; }
     else if (!strncmp(line, "rd", 2)) { g_kd_roll  = val; }
@@ -228,12 +281,15 @@ static void CMD_Parse(const char *line)
     else if (!strncmp(line, "yi", 2)) { g_ki_yaw   = val; }
     else if (!strncmp(line, "yd", 2)) { g_kd_yaw   = val; }
     else if (!strncmp(line, "ya", 2)) { g_kp_yaw_angle = val; }
+    /* === 偏航前馈 === */
     else if (!strncmp(line, "yf", 2)) {
         if (val >= -1.0f && val <= 1.0f) { g_yaw_ff_gain = val; }
     }
     else if (!strncmp(line, "yl", 2)) {
         if (val >= 0.0f && val <= 60.0f) { g_yaw_ff_limit = val; }
     }
+
+    /* === 外环 P + 速率限幅 === */
     else if (!strncmp(line, "pa", 2)) { g_kp_pitch_angle = val; }
     else if (!strncmp(line, "al", 2)) {
         if (val >= 10.0f && val <= 200.0f) {
@@ -246,11 +302,15 @@ static void CMD_Parse(const char *line)
             g_roll_angle_rate_limit = val;
         }
     }
+
+    /* === 油门 === */
     else if (!strncmp(line, "tr", 2)) { g_thr_override = val; }
     else if (!strncmp(line, "tx", 2)) {
         int16_t v = (int16_t)val;
         if (v >= 1050 && v <= 1550) { g_thr_rc_max_us = (uint16_t)v; }
     }
+
+    /* === VOFA 遥测 === */
     else if (!strncmp(line, "vo", 2)) { g_vofa_enable = (val > 0.5f) ? 1U : 0U; }
     else if (!strncmp(line, "vx", 2)) {
         int16_t v = (int16_t)val;
@@ -268,6 +328,8 @@ static void CMD_Parse(const char *line)
         int16_t v = (int16_t)val;
         if (v >= 0 && v <= 4) { g_shared_sensor.calib_test_flag = (uint8_t)v; }
     }
+
+    /* === 高度控制 === */
     else if (!strncmp(line, "ze", 2)) {
         if (s_armed == 0U) {
             g_height_hold_enable = (val > 0.5f) ? 1U : 0U;
@@ -295,12 +357,19 @@ static void CMD_Parse(const char *line)
     else if (!strncmp(line, "zd", 2)) {
         if (s_armed == 0U && val >= 0.05f && val <= 0.60f) { g_height_vz_down_max_mps = val; }
     }
+    else if (!strncmp(line, "ha", 2)) {
+        if (s_armed == 0U && val >= 0.05f && val <= 0.30f) {
+            g_height_stick_rate_mps = val;
+        }
+    }
     else if (!strncmp(line, "hp", 2)) {
         if (s_armed == 0U) {
             g_height_guard_enable = (val > 0.5f) ? 1U : 0U;
             if (g_height_guard_enable != 0U) { g_height_hold_enable = 0U; }
         }
     }
+
+    /* === 光流控制 === */
     else if (!strncmp(line, "fo", 2)) { g_flow_hold_enable = (val > 0.5f) ? 1U : 0U; }
     else if (!strncmp(line, "fs", 2)) {
         uint8_t enable = (val > 0.5f) ? 1U : 0U;
@@ -346,6 +415,8 @@ static void CMD_Parse(const char *line)
     else if (!strncmp(line, "fu", 2)) {
         if (val >= 2.0f && val <= 30.0f) { g_flow_stick_vel_limit_cmps = val; }
     }
+
+    /* === OF0 互补滤波参数 === */
     else if (!strncmp(line, "ok", 2)) {
         if (val >= -10.0f && val <= 10.0f) { g_of0_kx = val; }
     }
@@ -361,6 +432,8 @@ static void CMD_Parse(const char *line)
     else if (!strncmp(line, "oh", 2)) {
         if (val >= -10.0f && val <= 10.0f) { g_of0_gyro_comp_y = val; }
     }
+
+    /* === 系统 === */
     else if (!strncmp(line, "sl", 2)) {
         int16_t v = (int16_t)val;
         if (v >= 1 && v <= 100) { g_motor_slew_us = (uint16_t)v; }
@@ -394,169 +467,55 @@ static void CMD_Poll(void)
     }
 }
 
-/* ---- V307 串口协议解析 + 低压报警 ----
- * V307 (CH32V307VCT6) 通过 USART5 (PF5/PE0) 持续向 V3F 发送字节流：
- *   0xBB <x> <y> 0xBC  视觉圆心追踪帧（4字节）
- *   0x00               未发现圆心（字节心跳）
- *   0xCC               电池低压（V307 侧 4S<14V 或 3S<11V 时每主循环都发）
- *   0xDD               电流过大（>15A）
- *   0xAA / 0xAB        摄像头初始化结果（仅启动时一次）
- *
- * 必须用状态机解析：0xBB 之后的 3 字节属于图像数据(x, y, 0xBC)，
- * 不能误判为 0xCC/0xDD（图像 x, y 实际最大值 ~120，不会等于 0xBB，
- * 但状态机能在协议未来扩展时仍然安全）。
- *
- * 报警逻辑：500ms 内收到过 0xCC 则蜂鸣器持续响；超过 500ms 未再收到
- * 则解除报警（V307 端每个主循环都会发，停发即电压恢复或链路断开）。
- */
-#define V307_TAG_IMG_HEAD    0xBBU
-#define V307_TAG_BATT_LOW    0xCCU
-#define V307_TAG_OVERCURRENT 0xDDU
-#define V307_BATT_HOLD_MS    500U
-#define V307_OVERCURRENT_HOLD_MS 500U
-#define V307_OVERCURRENT_BUZZ_PERIOD_MS 80U
-#define V307_OVERCURRENT_BUZZ_ON_MS     35U
-
-static uint8_t V307_AlarmPoll(uint32_t now_ms)
-{
-    static enum { LP_IDLE, LP_IMG_X, LP_IMG_Y, LP_IMG_TAIL } s_state = LP_IDLE;
-    static uint32_t s_last_batt_ms = 0U;
-    static uint32_t s_last_overcurrent_ms = 0U;
-    static uint8_t  s_seen_batt   = 0U;
-    static uint8_t  s_seen_overcurrent = 0U;
-    static uint8_t  s_buzz_on     = 0U;
-    uint8_t b, batt_alarm, overcurrent, buzz_on, alarm_flags;
-
-    while (COMM_RxRead(&b)) {
-        switch (s_state) {
-            case LP_IDLE:
-                if      (b == V307_TAG_IMG_HEAD)  { s_state = LP_IMG_X; }
-                else if (b == V307_TAG_BATT_LOW)  { s_last_batt_ms = now_ms; s_seen_batt = 1U; }
-                else if (b == V307_TAG_OVERCURRENT) { s_last_overcurrent_ms = now_ms; s_seen_overcurrent = 1U; }
-                /* 其它 tag (0xAA/0xAB/0x00) �?忽略 */
-                break;
-            case LP_IMG_X:    s_state = LP_IMG_Y;    break;
-            case LP_IMG_Y:    s_state = LP_IMG_TAIL; break;
-            case LP_IMG_TAIL: s_state = LP_IDLE;     break;
-        }
-    }
-
-    batt_alarm = (s_seen_batt && (now_ms - s_last_batt_ms) <= V307_BATT_HOLD_MS) ? 1U : 0U;
-    overcurrent = (s_seen_overcurrent &&
-                   (now_ms - s_last_overcurrent_ms) <= V307_OVERCURRENT_HOLD_MS) ? 1U : 0U;
-
-    if (overcurrent) {
-        buzz_on = ((now_ms % V307_OVERCURRENT_BUZZ_PERIOD_MS) < V307_OVERCURRENT_BUZZ_ON_MS) ? 1U : 0U;
-    } else {
-        buzz_on = batt_alarm;
-    }
-
-    if (buzz_on != s_buzz_on) {
-        s_buzz_on = buzz_on;
-        BUZZ_Control(buzz_on);
-    }
-
-    alarm_flags = 0U;
-    if (batt_alarm)   alarm_flags |= SHARED_ALARM_BATT_LOW;
-    if (overcurrent)  alarm_flags |= SHARED_ALARM_OVERCURRENT;
-    g_shared_sensor.alarm_flags = alarm_flags;
-
-    return alarm_flags;
-}
-
 /* ---- 安全参数 ----
  *
- * 这里有两个独立的油门上限，含义完全不同，**不要混用**�?
+ * 这里有两个独立的油门上限，含义完全不同，**不要混用**：
  *
- *   THR_MAX_US        �? 油门"操作上限"。摇杆推到顶 / tr 命令最?
- *                        只能 thr_base 达到这个值。这就是�?打算�?
- *                        到多高油�?的目标�?
+ *   THR_MAX_US        —  油门"操作上限"。摇杆推到顶 / tr 命令最大
+ *                        只能 thr_base 达到这个值。这就是你打算给
+ *                        到多高油门的目标值。
  *
- *   PWM_SAFE_MAX_US   —�?每路电机 PWM 输出�?硬上�?。是 thr_base �?
- *                        减完 PID 三轴修正量之后再钳到的值。必�?>
- *                        THR_MAX_US，差值就是留�?PID 上调的余量�?
+ *   PWM_SAFE_MAX_US   —— 每路电机 PWM 输出的硬上限。是 thr_base 加
+ *                        减完 PID 三轴修正量之后再钳到的值。必须 >
+ *                        THR_MAX_US，差值就是留给 PID 上调的余量。
  *
- * 例：THR_MAX_US=1450 + 100us 余量 �?PWM_SAFE_MAX_US=1550�?
- *     这样满油门时单路电机也能再被 PID 拉高 ~100us 而不被钳掉�?
- *     若两者相等（之前的错误设置），满油门时所�?PID 上调全部
- *     被削平，四个电机会输出一模一样的 PWM�?
+ * 例：THR_MAX_US=1450 + 100us 余量 → PWM_SAFE_MAX_US=1550。
+ *     这样满油门时单路电机也能再被 PID 拉高 ~100us 而不被钳掉。
+ *     若两者相等（之前的错误设置），满油门时所有 PID 上调全部
+ *     被削平，四个电机会输出一模一样的 PWM。
  */
-#define THR_TEST_MAX_US     1550U    /* tr/gr �?bench 测试能拉到的最大目标油�?*/
-#define THR_MAX_US          THR_TEST_MAX_US
 #define THR_RC_MID_US       1400U
 #define YAW_RATE_LIMIT_DPS  30.0f
-#define MANUAL_ATT_MAX_DEG  3.0f
-#define RC_STICK_MAX        120.0f
-#define RC_STICK_DEADBAND   5
+#define MANUAL_ATT_MAX_DEG  6.0f
 #define YAW_FF_START_US     THR_RC_MID_US
-#define PWM_SAFE_MAX_US     1750U    /* Hard PWM cap including PID margin. */
-#define ARM_THR_THRESHOLD   (-100)   /* 油门需 �?此值才能解�?*/
-#define PID_PERIOD_US       6667U    /* PID 周期 6667us �?150Hz (TIM2 ARR) */
+#define ARM_THR_THRESHOLD   (-100)   /* 油门需低于此值才能解锁 */
+#define PID_PERIOD_US       6667U    /* PID 周期 6667us ≈ 150Hz (TIM2 ARR) */
 #define VOFA_PERIOD_MS      10U      /* VOFA 周期 10ms = 100Hz */
-#define THR_RAMP_UP_US      2.0f     /* 油门缓升：每�?PID 周期最�?+2us�?*150=300us/s�?*/
-#define THR_RAMP_DN_US      2.0f     /* 油门缓降：同�?300us/s。自紧螺纹桨减速过快时
-                                      *   桨叶惯性会反向打松螺母，必须对称缓降�?                                      *   1450�?000 大概 1.5s。紧急停机走 PWM_Lock() 不受此限�?*/
-/* 单电�?PWM 双向 slew 见文件顶�?g_motor_slew_us 全局变量声明�?*/
+#define THR_RAMP_UP_US      2.0f     /* 油门缓升：每 PID 周期最多+2us，*150=300us/s */
+#define THR_RAMP_DN_US      2.0f     /* 油门缓降：同步 300us/s。自紧螺纹桨减速过快时
+                                      *   桨叶惯性会反向打松螺母，必须对称缓降。
+                                      *   1450→1000 大概 1.5s。紧急停机走 PWM_Lock() 不受此限。 */
+/* 单电机PWM 双向 slew 见文件顶部 g_motor_slew_us 全局变量声明 */
 #define SOFT_STOP_RC_THRESHOLD (-100) /* tr fixed-throttle bench mode: pull RC throttle below this to soft-stop. */
 #define SOFT_STOP_TIME_MS      2000U  /* Soft-stop ramp time; emergency disarm paths still lock immediately. */
-#define PID_DT               0.006667f  /* 1 / 150Hz */
-#define RATE_GYRO_LPF_ALPHA  0.4299f    /* 18Hz first-order LPF at 150Hz. */
-
-/* Height estimator/control constants.  The source timestamp is V5F ms; data
- * freshness is measured only with the local V3F g_sys_tick. */
-#define RC_SW_WAIT                   0U
-#define RC_SW_HEIGHT_HOLD            1U
-#define RC_SW_FLY                    2U
-#define HEIGHT_TOF_MIN_MM            50U
-#define HEIGHT_TOF_MAX_MM            4000U
-#define HEIGHT_TOF_I_FREEZE_MS       100U
-#define HEIGHT_TOF_TIMEOUT_MS        200U
-#define HEIGHT_SENSOR_RECOVERY_MS    500U
-#define HEIGHT_SOURCE_DT_MIN_S       0.010f
-#define HEIGHT_SOURCE_DT_MAX_S       0.100f
-#define HEIGHT_TILT_COS_MIN          0.819152f  /* cos(35 deg) */
-#define HEIGHT_LPF_CUTOFF_HZ         5.0f
-#define HEIGHT_VZ_LPF_CUTOFF_HZ      3.0f
-#define HEIGHT_JUMP_BASE_M           0.12f
-#define HEIGHT_JUMP_MAX_VZ_MPS       1.5f
-#define HEIGHT_READY_FRAMES          3U
-#define HEIGHT_ENTRY_MIN_M           0.15f
-#define HEIGHT_LOW_STICK             (-80)
-#define HEIGHT_ENTRY_BLEND_MS        500U
-#define HEIGHT_FALLBACK_BLEND_MS     300U
-#define HEIGHT_PI_DT                 (3.0f * PID_DT)
-#define HEIGHT_I_LIMIT_US            10.0f
-#define HEIGHT_ENTRY_VZ_MAX_MPS       0.60f
-
-#define HEIGHT_DIAG_NEW_FRAME        0x01U
-#define HEIGHT_DIAG_VALID            0x02U
-#define HEIGHT_DIAG_TIMEOUT          0x04U
-#define HEIGHT_DIAG_TILT_REJECT      0x08U
-#define HEIGHT_DIAG_JUMP_REJECT      0x10U
-#define HEIGHT_DIAG_ACTIVE           0x20U
-#define HEIGHT_DIAG_SAT_HIGH         0x40U
-#define HEIGHT_DIAG_SAT_LOW          0x80U
-#define HEIGHT_DIAG_ENTRY_REJECTED   0x0200U
-#define HEIGHT_DIAG_SENSOR_HOLD      0x0400U
-
 
 /*
- * 电机混控矩阵（X 型，从上往下视图）�?
- *   �?
+ * 电机混控矩阵（X 型，从上往下视图）：
+ *    ↑前
  *  M2(CW  FL)  M1(CCW FR)
  *  M3(CCW RL)  M4(CW  RR)
- *   �?
+ *    ↓后
  *
  *  对角对（同旋向）：M1-M3 (CCW)，M2-M4 (CW)
- *  Roll  同侧：右(M1+M4)  �?M2+M3)
- *  Pitch 同侧：前(M1+M2)  �?M3+M4)
+ *  Roll  同侧：右(M1+M4) - (M2+M3)
+ *  Pitch 同侧：前(M1+M2) - (M3+M4)
  *
  *  M1 = T - R - P + Y    (FR CCW)
  *  M2 = T + R - P - Y    (FL CW)
  *  M3 = T + R + P + Y    (RL CCW)
  *  M4 = T - R + P - Y    (RR CW)
  *
- * 若某轴响应方向反了，把对应符号取反即可�?
+ * 若某轴响应方向反了，把对应符号取反即可。
  */
 static uint16_t pwm_slew(uint16_t now, uint16_t prev)
 {
@@ -574,593 +533,22 @@ static uint16_t mix_clamp(float val)
     return (uint16_t)val;
 }
 
-static float wrap_angle_deg(float a)
+float wrap_angle_deg(float a)
 {
     while (a > 180.0f) a -= 360.0f;
     while (a < -180.0f) a += 360.0f;
     return a;
 }
 
-static float clampf(float v, float lo, float hi)
+float clampf(float v, float lo, float hi)
 {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
 }
 
-typedef enum
-{
-    HEIGHT_MODE_OFF = 0,
-    HEIGHT_MODE_ACTIVE,
-    HEIGHT_MODE_SENSOR_HOLD,
-    HEIGHT_MODE_DEGRADED
-} HeightMode_t;
 
-typedef struct
-{
-    uint32_t seen_source_mark;
-    uint32_t accepted_source_mark;
-    uint32_t candidate_source_mark;
-    uint32_t last_seen_local_ms;
-    uint32_t last_accepted_local_ms;
-    uint16_t raw_mm;
-    uint16_t candidate_raw_mm;
-    float source_dt_ms;
-    float height_comp_m;
-    float height_filt_m;
-    float last_height_comp_m;
-    float last_height_filt_m;
-    float vz_raw_mps;
-    float vz_filt_mps;
-    uint8_t initialized;
-    uint8_t valid;
-    uint8_t good_frames;
-    uint8_t freeze_integrator;
-    uint8_t diag_flags;
-    uint8_t candidate_state;
-    uint8_t candidate_valid;
-    uint8_t candidate_ready;
-} HeightEstimator_t;
-
-static HeightEstimator_t s_height_est = {0};
-static HeightMode_t s_height_mode = HEIGHT_MODE_OFF;
-static uint8_t s_height_request_prev = 0U;
-static uint8_t s_height_reentry_block = 0U;
-static uint8_t s_height_cycle = 0U;
-static uint8_t s_height_sat_high = 0U;
-static uint8_t s_height_sat_low = 0U;
-static uint32_t s_height_transition_start_ms = 0UL;
-static float s_height_transition_from_us = (float)PWM_MIN_PULSE_US;
-static float s_height_target_m = 0.0f;
-static float s_height_target_vz_mps = 0.0f;
-static float s_height_vz_error_mps = 0.0f;
-static float s_height_p_us = 0.0f;
-static float s_height_i_us = 0.0f;
-static float s_height_correction_us = 0.0f;
-static float s_height_hover_base_us = 1400.0f;
-static float s_height_sensor_hold_us = (float)PWM_MIN_PULSE_US;
-static uint8_t s_height_entry_rejected = 0U;
-
-static uint8_t Height_ReadTofSnapshot(uint32_t *mark,
-                                      uint16_t *distance_mm,
-                                      uint8_t *state,
-                                      uint8_t *valid)
-{
-    uint8_t attempt;
-
-    for (attempt = 0U; attempt < 3U; attempt++) {
-        uint32_t mark_begin = g_shared_sensor.tof_update_tick;
-        uint32_t mark_end;
-        uint16_t d;
-        uint8_t st;
-        uint8_t ok;
-
-        if (mark_begin == 0UL) {
-            return 0U;
-        }
-
-        __asm__ volatile("fence rw, rw" ::: "memory");
-        d = g_shared_sensor.tof_distance_mm;
-        st = g_shared_sensor.tof_state;
-        ok = g_shared_sensor.tof_valid;
-        __asm__ volatile("fence rw, rw" ::: "memory");
-        mark_end = g_shared_sensor.tof_update_tick;
-
-        if (mark_begin == mark_end) {
-            *mark = mark_begin;
-            *distance_mm = d;
-            *state = st;
-            *valid = ok;
-            return 1U;
-        }
-    }
-
-    return 0U;
-}
-
-static void HeightEstimator_Update(uint32_t now_ms)
-{
-    uint32_t source_mark;
-    uint16_t distance_mm;
-    uint8_t source_state;
-    uint8_t source_valid;
-    uint8_t snapshot_confirmed = 0U;
-
-    s_height_est.diag_flags &= (uint8_t)~HEIGHT_DIAG_NEW_FRAME;
-
-    if (Height_ReadTofSnapshot(&source_mark, &distance_mm,
-                               &source_state, &source_valid) &&
-        source_mark != s_height_est.seen_source_mark) {
-        /* tof_update_tick is packed and therefore not naturally aligned in
-         * the fixed shared ABI.  Require the entire snapshot to be identical
-         * on two consecutive 150 Hz ticks before consuming it. */
-        if (s_height_est.candidate_ready != 0U &&
-            source_mark == s_height_est.candidate_source_mark &&
-            distance_mm == s_height_est.candidate_raw_mm &&
-            source_state == s_height_est.candidate_state &&
-            source_valid == s_height_est.candidate_valid) {
-            snapshot_confirmed = 1U;
-            s_height_est.candidate_ready = 0U;
-        } else {
-            s_height_est.candidate_source_mark = source_mark;
-            s_height_est.candidate_raw_mm = distance_mm;
-            s_height_est.candidate_state = source_state;
-            s_height_est.candidate_valid = source_valid;
-            s_height_est.candidate_ready = 1U;
-        }
-    }
-
-    if (snapshot_confirmed != 0U) {
-        float roll_deg = g_shared_sensor.roll;
-        float pitch_deg = g_shared_sensor.pitch;
-        float roll_r;
-        float pitch_r;
-        float tilt_cos;
-        float raw_m;
-        float height_comp_m;
-        float dt_s = 0.0f;
-        uint8_t sample_ok;
-
-        s_height_est.seen_source_mark = source_mark;
-        s_height_est.last_seen_local_ms = now_ms;
-        s_height_est.raw_mm = distance_mm;
-        s_height_est.diag_flags |= HEIGHT_DIAG_NEW_FRAME;
-
-        sample_ok = (source_valid != 0U &&
-                     source_state == 0U &&
-                     distance_mm >= HEIGHT_TOF_MIN_MM &&
-                     distance_mm <= HEIGHT_TOF_MAX_MM) ? 1U : 0U;
-
-        if (!(roll_deg == roll_deg) || !(pitch_deg == pitch_deg) ||
-            fabsf(roll_deg) > 85.0f || fabsf(pitch_deg) > 85.0f) {
-            sample_ok = 0U;
-            s_height_est.diag_flags |= HEIGHT_DIAG_TILT_REJECT;
-        }
-
-        roll_r = roll_deg * 0.017453293f;
-        pitch_r = pitch_deg * 0.017453293f;
-        tilt_cos = cosf(roll_r) * cosf(pitch_r);
-        if (tilt_cos < HEIGHT_TILT_COS_MIN) {
-            sample_ok = 0U;
-            s_height_est.diag_flags |= HEIGHT_DIAG_TILT_REJECT;
-        }
-
-        raw_m = (float)distance_mm * 0.001f;
-        height_comp_m = raw_m * tilt_cos;
-
-        if (sample_ok && s_height_est.initialized != 0U) {
-            uint32_t source_delta_ms = source_mark - s_height_est.accepted_source_mark;
-            dt_s = (float)source_delta_ms * 0.001f;
-            s_height_est.source_dt_ms = (float)source_delta_ms;
-
-            if (dt_s < HEIGHT_SOURCE_DT_MIN_S ||
-                dt_s > HEIGHT_SOURCE_DT_MAX_S) {
-                sample_ok = 0U;
-            } else {
-                float jump_limit_m = HEIGHT_JUMP_BASE_M + HEIGHT_JUMP_MAX_VZ_MPS * dt_s;
-                if (fabsf(height_comp_m - s_height_est.last_height_comp_m) > jump_limit_m) {
-                    sample_ok = 0U;
-                    s_height_est.diag_flags |= HEIGHT_DIAG_JUMP_REJECT;
-                }
-            }
-        }
-
-        if (sample_ok) {
-            if (s_height_est.initialized == 0U) {
-                s_height_est.height_comp_m = height_comp_m;
-                s_height_est.height_filt_m = height_comp_m;
-                s_height_est.last_height_comp_m = height_comp_m;
-                s_height_est.last_height_filt_m = height_comp_m;
-                s_height_est.vz_raw_mps = 0.0f;
-                s_height_est.vz_filt_mps = 0.0f;
-                s_height_est.source_dt_ms = 0.0f;
-                s_height_est.good_frames = 1U;
-                s_height_est.initialized = 1U;
-            } else {
-                const float height_tau = 1.0f / (6.283185307f * HEIGHT_LPF_CUTOFF_HZ);
-                const float vz_tau = 1.0f / (6.283185307f * HEIGHT_VZ_LPF_CUTOFF_HZ);
-                float height_alpha = dt_s / (height_tau + dt_s);
-                float vz_alpha = dt_s / (vz_tau + dt_s);
-
-                s_height_est.height_comp_m = height_comp_m;
-                s_height_est.height_filt_m += height_alpha *
-                    (height_comp_m - s_height_est.height_filt_m);
-                s_height_est.vz_raw_mps =
-                    (s_height_est.height_filt_m - s_height_est.last_height_filt_m) / dt_s;
-                s_height_est.vz_filt_mps += vz_alpha *
-                    (s_height_est.vz_raw_mps - s_height_est.vz_filt_mps);
-                s_height_est.last_height_comp_m = height_comp_m;
-                s_height_est.last_height_filt_m = s_height_est.height_filt_m;
-                if (s_height_est.good_frames < 255U) {
-                    s_height_est.good_frames++;
-                }
-            }
-
-            s_height_est.accepted_source_mark = source_mark;
-            s_height_est.last_accepted_local_ms = now_ms;
-            s_height_est.valid = 1U;
-            s_height_est.freeze_integrator = 0U;
-            s_height_est.diag_flags &= (uint8_t)~(HEIGHT_DIAG_TIMEOUT |
-                                                   HEIGHT_DIAG_TILT_REJECT |
-                                                   HEIGHT_DIAG_JUMP_REJECT);
-        } else {
-            s_height_est.good_frames = 0U;
-            s_height_est.freeze_integrator = 1U;
-        }
-    }
-
-    if (s_height_est.initialized != 0U &&
-        (now_ms - s_height_est.last_accepted_local_ms) > HEIGHT_TOF_I_FREEZE_MS) {
-        s_height_est.freeze_integrator = 1U;
-    }
-
-    if (s_height_est.initialized == 0U ||
-        (now_ms - s_height_est.last_accepted_local_ms) > HEIGHT_TOF_TIMEOUT_MS) {
-        s_height_est.valid = 0U;
-        s_height_est.good_frames = 0U;
-        s_height_est.freeze_integrator = 1U;
-        s_height_est.diag_flags |= HEIGHT_DIAG_TIMEOUT;
-        s_height_est.diag_flags &= (uint8_t)~HEIGHT_DIAG_VALID;
-        if ((now_ms - s_height_est.last_accepted_local_ms) > HEIGHT_TOF_TIMEOUT_MS) {
-            s_height_est.initialized = 0U;
-        }
-    } else {
-        s_height_est.diag_flags |= HEIGHT_DIAG_VALID;
-        s_height_est.diag_flags &= (uint8_t)~HEIGHT_DIAG_TIMEOUT;
-    }
-}
-
-/* The mode edge is intentionally independent of throttle.  A switch held high
- * through arming must be released and asserted again before entry is possible. */
-static uint8_t Height_SwitchRequest(void)
-{
-    return (g_height_hold_enable != 0U &&
-            g_shared_sensor.rc_link_ok == 1U &&
-            g_shared_sensor.rc_sw == RC_SW_HEIGHT_HOLD) ? 1U : 0U;
-}
-
-static void HeightControl_Reset(void)
-{
-    uint8_t request = Height_SwitchRequest();
-
-    s_height_mode = HEIGHT_MODE_OFF;
-    s_height_request_prev = request;
-    s_height_reentry_block = request;
-    s_height_cycle = 0U;
-    s_height_sat_high = 0U;
-    s_height_sat_low = 0U;
-    s_height_transition_start_ms = 0UL;
-    s_height_transition_from_us = (float)PWM_MIN_PULSE_US;
-    s_height_target_m = s_height_est.height_filt_m;
-    s_height_target_vz_mps = 0.0f;
-    s_height_vz_error_mps = 0.0f;
-    s_height_p_us = 0.0f;
-    s_height_i_us = 0.0f;
-    s_height_correction_us = 0.0f;
-    s_height_hover_base_us = clampf(g_hover_throttle_us,
-                                    (float)PWM_MIN_PULSE_US,
-                                    (float)THR_MAX_US);
-    s_height_sensor_hold_us = (float)PWM_MIN_PULSE_US;
-    s_height_entry_rejected = 0U;
-}
-
-static void HeightControl_StartDegraded(uint32_t now_ms, uint8_t block_reentry)
-{
-    s_height_mode = HEIGHT_MODE_DEGRADED;
-    s_height_transition_start_ms = now_ms;
-    s_height_transition_from_us = thr_base;
-    s_height_target_vz_mps = 0.0f;
-    s_height_vz_error_mps = 0.0f;
-    s_height_p_us = 0.0f;
-    s_height_i_us = 0.0f;
-    s_height_correction_us = 0.0f;
-    s_height_sat_high = 0U;
-    s_height_sat_low = 0U;
-    if (block_reentry != 0U) {
-        s_height_reentry_block = 1U;
-    }
-}
-
-/* Manual throttle is intentionally ignored while height hold is active.  A
- * sensor dropout therefore holds the last applied collective instead of
- * silently handing control to an arbitrary, previously ignored stick value. */
-static void HeightControl_StartSensorHold(uint32_t now_ms)
-{
-    s_height_mode = HEIGHT_MODE_SENSOR_HOLD;
-    s_height_reentry_block = 1U;
-    s_height_cycle = 0U;
-    s_height_transition_start_ms = now_ms;
-    s_height_sensor_hold_us = clampf(thr_base,
-                                     (float)PWM_MIN_PULSE_US,
-                                     (float)THR_MAX_US);
-    s_height_target_vz_mps = 0.0f;
-    s_height_vz_error_mps = 0.0f;
-    s_height_p_us = 0.0f;
-    s_height_i_us = 0.0f;
-    s_height_correction_us = 0.0f;
-    s_height_sat_high = 0U;
-    s_height_sat_low = 0U;
-}
-
-static void HeightControl_ResumeSensorHold(uint32_t now_ms)
-{
-    float resume_collective = clampf(thr_base,
-                                     (float)PWM_MIN_PULSE_US,
-                                     (float)THR_MAX_US);
-
-    s_height_mode = HEIGHT_MODE_ACTIVE;
-    s_height_reentry_block = 0U;
-    s_height_cycle = 5U;
-    s_height_transition_start_ms = now_ms;
-    s_height_transition_from_us = resume_collective;
-    s_height_sensor_hold_us = resume_collective;
-    s_height_hover_base_us = resume_collective;
-    s_height_target_m = s_height_est.height_filt_m;
-    s_height_target_vz_mps = 0.0f;
-    s_height_vz_error_mps = 0.0f;
-    s_height_p_us = 0.0f;
-    s_height_i_us = 0.0f;
-    s_height_correction_us = 0.0f;
-    s_height_sat_high = 0U;
-    s_height_sat_low = 0U;
-    s_height_entry_rejected = 0U;
-}
-
-static void HeightControl_PositionLoop(void)
-{
-    float height_error_m = s_height_target_m - s_height_est.height_filt_m;
-    s_height_target_vz_mps = clampf(g_height_pos_kp * height_error_m,
-                                    -g_height_vz_down_max_mps,
-                                     g_height_vz_up_max_mps);
-}
-
-static void HeightControl_VelocityLoop(void)
-{
-    float i_candidate;
-    float output_candidate;
-    float limit = clampf(g_height_corr_limit_us, 0.0f, 30.0f);
-    uint8_t allow_integrator = (s_height_est.freeze_integrator == 0U) ? 1U : 0U;
-
-    s_height_vz_error_mps = s_height_target_vz_mps - s_height_est.vz_filt_mps;
-    s_height_p_us = g_height_vel_kp * s_height_vz_error_mps;
-    i_candidate = clampf(s_height_i_us +
-                         g_height_vel_ki * s_height_vz_error_mps * HEIGHT_PI_DT,
-                         -HEIGHT_I_LIMIT_US, HEIGHT_I_LIMIT_US);
-
-    if ((s_height_sat_high != 0U && s_height_vz_error_mps > 0.0f) ||
-        (s_height_sat_low != 0U && s_height_vz_error_mps < 0.0f)) {
-        allow_integrator = 0U;
-    }
-    if ((g_sys_tick - s_height_transition_start_ms) < HEIGHT_ENTRY_BLEND_MS) {
-        allow_integrator = 0U;
-    }
-
-    output_candidate = s_height_p_us + i_candidate;
-    if ((output_candidate > limit && s_height_vz_error_mps > 0.0f) ||
-        (output_candidate < -limit && s_height_vz_error_mps < 0.0f)) {
-        allow_integrator = 0U;
-    }
-
-    if (allow_integrator != 0U) {
-        s_height_i_us = i_candidate;
-    }
-    s_height_correction_us = clampf(s_height_p_us + s_height_i_us,
-                                    -limit, limit);
-}
-
-/* Returns 1 while height code owns collective_target_us. */
-static uint8_t HeightControl_Update(float manual_target_us,
-                                    uint32_t now_ms,
-                                    float *collective_target_us)
-{
-    uint8_t request = Height_SwitchRequest();
-    uint8_t rising = (request != 0U && s_height_request_prev == 0U) ? 1U : 0U;
-
-    if (request == 0U) {
-        s_height_reentry_block = 0U;
-        s_height_entry_rejected = 0U;
-    }
-
-    if (g_test_motor != 0U || g_test_ramp_active != 0U ||
-        g_thr_override > 1.0f || soft_stop_active != 0U) {
-        HeightControl_Reset();
-        *collective_target_us = manual_target_us;
-        return 0U;
-    }
-
-    if (s_height_mode == HEIGHT_MODE_ACTIVE && s_height_est.valid == 0U) {
-        HeightControl_StartSensorHold(now_ms);
-    } else if (s_height_mode == HEIGHT_MODE_ACTIVE &&
-               (request == 0U || STICK_THROTTLE <= HEIGHT_LOW_STICK)) {
-        HeightControl_StartDegraded(now_ms, 0U);
-    }
-
-    if (s_height_mode == HEIGHT_MODE_SENSOR_HOLD) {
-        uint32_t hold_elapsed_ms = now_ms - s_height_transition_start_ms;
-
-        if (request == 0U || STICK_THROTTLE <= HEIGHT_LOW_STICK) {
-            HeightControl_StartDegraded(now_ms, 0U);
-        } else if (hold_elapsed_ms <= HEIGHT_SENSOR_RECOVERY_MS &&
-                   s_height_est.valid != 0U &&
-                   s_height_est.good_frames >= HEIGHT_READY_FRAMES) {
-            HeightControl_ResumeSensorHold(now_ms);
-        }
-    }
-
-    if (s_height_mode == HEIGHT_MODE_OFF && rising != 0U) {
-        float correction_limit = clampf(g_height_corr_limit_us, 0.0f, 30.0f);
-        float capture_lo = (float)PWM_MIN_PULSE_US + correction_limit;
-        float capture_hi = (float)THR_MAX_US - correction_limit;
-        uint8_t entry_ready = (s_height_reentry_block == 0U &&
-                               STICK_THROTTLE > HEIGHT_LOW_STICK &&
-                               s_height_est.valid != 0U &&
-                               s_height_est.good_frames >= HEIGHT_READY_FRAMES &&
-                               s_height_est.height_filt_m >= HEIGHT_ENTRY_MIN_M &&
-                               fabsf(s_height_est.vz_filt_mps) <=
-                                   HEIGHT_ENTRY_VZ_MAX_MPS &&
-                               thr_base >= capture_lo &&
-                               thr_base <= capture_hi) ? 1U : 0U;
-
-        if (entry_ready != 0U) {
-            s_height_mode = HEIGHT_MODE_ACTIVE;
-            /* Capture the collective actually flying the aircraft on the
-             * switch edge.  This avoids forcing different batteries toward a
-             * fixed nominal hover throttle and makes the handover bumpless. */
-            s_height_hover_base_us = thr_base;
-            s_height_target_m = s_height_est.height_filt_m;
-            s_height_target_vz_mps = 0.0f;
-            s_height_vz_error_mps = 0.0f;
-            s_height_p_us = 0.0f;
-            s_height_i_us = 0.0f;
-            s_height_correction_us = 0.0f;
-            s_height_sat_high = 0U;
-            s_height_sat_low = 0U;
-            s_height_cycle = 5U; /* next tick runs 25Hz P before 50Hz PI */
-            s_height_transition_start_ms = now_ms;
-            s_height_transition_from_us = thr_base;
-            s_height_entry_rejected = 0U;
-        } else {
-            /* Require Fly -> Hover again.  Holding the switch in Hover after
-             * a rejected edge must never cause a late surprise takeover when
-             * the estimator subsequently becomes ready. */
-            s_height_reentry_block = 1U;
-            s_height_entry_rejected = 1U;
-        }
-    }
-
-    if (s_height_mode == HEIGHT_MODE_ACTIVE) {
-        float controller_collective_us;
-        float blend;
-        uint32_t elapsed_ms;
-
-        s_height_cycle++;
-        if (s_height_cycle >= 6U) {
-            s_height_cycle = 0U;
-        }
-        if (s_height_cycle == 0U) {
-            HeightControl_PositionLoop();
-        }
-        if ((s_height_cycle % 3U) == 0U) {
-            HeightControl_VelocityLoop();
-        }
-
-        controller_collective_us = clampf(s_height_hover_base_us + s_height_correction_us,
-                                          (float)PWM_MIN_PULSE_US,
-                                          (float)THR_MAX_US);
-        elapsed_ms = now_ms - s_height_transition_start_ms;
-        blend = (elapsed_ms >= HEIGHT_ENTRY_BLEND_MS) ? 1.0f :
-                ((float)elapsed_ms / (float)HEIGHT_ENTRY_BLEND_MS);
-        *collective_target_us = s_height_transition_from_us +
-            blend * (controller_collective_us - s_height_transition_from_us);
-        s_height_request_prev = request;
-        return 1U;
-    }
-
-    if (s_height_mode == HEIGHT_MODE_SENSOR_HOLD) {
-        *collective_target_us = s_height_sensor_hold_us;
-        s_height_request_prev = request;
-        return 1U;
-    }
-
-    if (s_height_mode == HEIGHT_MODE_DEGRADED) {
-        uint32_t elapsed_ms = now_ms - s_height_transition_start_ms;
-        float blend = (elapsed_ms >= HEIGHT_FALLBACK_BLEND_MS) ? 1.0f :
-                      ((float)elapsed_ms / (float)HEIGHT_FALLBACK_BLEND_MS);
-        *collective_target_us = s_height_transition_from_us +
-            blend * (manual_target_us - s_height_transition_from_us);
-        if (elapsed_ms >= HEIGHT_FALLBACK_BLEND_MS) {
-            s_height_mode = HEIGHT_MODE_OFF;
-        }
-        s_height_request_prev = request;
-        return 1U;
-    }
-
-    s_height_request_prev = request;
-    *collective_target_us = manual_target_us;
-    return 0U;
-}
-
-static void HeightControl_ApplyHeadroom(float out_roll_mix,
-                                        float out_pitch_mix,
-                                        float out_yaw_mix,
-                                        float *collective_us)
-{
-    float mix_term[4];
-    float collective_lo = (float)PWM_MIN_PULSE_US;
-    float collective_hi = (float)THR_MAX_US;
-    float requested = *collective_us;
-    uint8_t i;
-
-    if (s_height_mode != HEIGHT_MODE_ACTIVE &&
-        s_height_mode != HEIGHT_MODE_SENSOR_HOLD) {
-        s_height_sat_high = 0U;
-        s_height_sat_low = 0U;
-        return;
-    }
-
-    /* Preserve the existing mixer signs; only calculate its collective room. */
-    mix_term[0] =  out_roll_mix - out_pitch_mix - out_yaw_mix;
-    mix_term[1] = -out_roll_mix - out_pitch_mix + out_yaw_mix;
-    mix_term[2] = -out_roll_mix + out_pitch_mix - out_yaw_mix;
-    mix_term[3] =  out_roll_mix + out_pitch_mix + out_yaw_mix;
-
-    for (i = 0U; i < 4U; i++) {
-        float lo = (float)PWM_MIN_PULSE_US - mix_term[i];
-        float hi = (float)PWM_SAFE_MAX_US - mix_term[i];
-        if (lo > collective_lo) collective_lo = lo;
-        if (hi < collective_hi) collective_hi = hi;
-    }
-
-    if (collective_lo > collective_hi) {
-        *collective_us = clampf(requested,
-                                (float)PWM_MIN_PULSE_US,
-                                (float)THR_MAX_US);
-        s_height_sat_high = 1U;
-        s_height_sat_low = 1U;
-        return;
-    }
-
-    *collective_us = clampf(requested, collective_lo, collective_hi);
-    s_height_sat_high = (requested > collective_hi ||
-                         (s_height_correction_us >= g_height_corr_limit_us &&
-                          s_height_vz_error_mps > 0.0f)) ? 1U : 0U;
-    s_height_sat_low = (requested < collective_lo ||
-                        (s_height_correction_us <= -g_height_corr_limit_us &&
-                         s_height_vz_error_mps < 0.0f)) ? 1U : 0U;
-}
-
-static uint16_t HeightControl_DiagFlags(void)
-{
-    uint16_t flags = (uint16_t)s_height_est.diag_flags;
-    if (s_height_mode == HEIGHT_MODE_ACTIVE) flags |= HEIGHT_DIAG_ACTIVE;
-    if (s_height_mode == HEIGHT_MODE_SENSOR_HOLD) flags |= HEIGHT_DIAG_SENSOR_HOLD;
-    if (s_height_sat_high != 0U) flags |= HEIGHT_DIAG_SAT_HIGH;
-    if (s_height_sat_low != 0U) flags |= HEIGHT_DIAG_SAT_LOW;
-    if (s_height_entry_rejected != 0U) flags |= HEIGHT_DIAG_ENTRY_REJECTED;
-    return flags;
-}
-
-static float stick_norm(int16_t stick)
+float stick_norm(int16_t stick)
 {
     if (stick > -RC_STICK_DEADBAND && stick < RC_STICK_DEADBAND) {
         return 0.0f;
@@ -1169,6 +557,30 @@ static float stick_norm(int16_t stick)
     return clampf((float)stick / RC_STICK_MAX, -1.0f, 1.0f);
 }
 
+/*
+ * OF0_Estimator_Update — OF0 光流速度互补滤波器
+ * ============================================================================
+ * 输入：
+ *   g_shared_sensor.flow_d{x,y}_raw    — OF0 原始像素位移（归一化后为 cm/s）
+ *   g_shared_sensor.accel_g[0/1/2]     — JY61P 加速度计 (g)
+ *   g_shared_sensor.roll/pitch         — 当前姿态角 (deg)，用于机体→水平投影
+ *   g_shared_sensor.gyro_dps[0/1]      — 角速度 (deg/s)，用于光流自旋补偿
+ *   height_cm                           — 当前高度 (cm)，用于像素→cm/s 换算
+ * 步骤：
+ *   [1] 加速度机体→水平系投影：用 roll/pitch 把 accel 转到水平面
+ *       acc_level_forward = cp*ax + sr*sp*ay + cr*sp*az
+ *       acc_level_right   = cr*ay - sr*az
+ *   [2] 预测：v_pred = 上一拍 v + acc * dt
+ *       （IMU 积分预测速度，高频但会漂移）
+ *   [3] 观测：有新光流帧时，将 raw 像素 * 高度 * k_factor 转为 cm/s
+ *       raw = pixel * height * k - gyro * gyro_comp（扣除自旋引起的像素位移）
+ *   [4] 互补融合：v = alpha * raw + (1-alpha) * pred
+ *       alpha = g_of0_alpha（可调），α 越大越信光流，越小越信 IMU
+ *   [5] 无光流帧时：纯用 IMU 预测 * 0.98（微衰减防漂移）
+ *   [6] clip 到 ±200 cm/s
+ * 输出：
+ *   of0_vx_cmps / of0_vy_cmps — 互补滤波后的水平速度 (cm/s)，机体坐标系
+ */
 static void OF0_Estimator_Update(float dt)
 {
     float roll_r = g_shared_sensor.roll * 0.017453293f;
@@ -1217,16 +629,37 @@ static void OF0_Estimator_Update(float dt)
 }
 
 
+/*
+ * RatePD_Update — 角速度 PD 控制器（roll/pitch 内环）
+ * ============================================================================
+ * 流程：
+ *   [1] error = rate_sp - gyro_dps        — 角速度误差 (deg/s)
+ *   [2] error_filt += alpha * (error - error_filt) — 对误差做一阶 LPF
+ *   [3] deriv = (error_filt - prev_error_filt) / dt — 滤波后误差的微分
+ *   [4] output = kp * error_filt + kd * deriv       — PD 融合输出 (us)
+ *
+ * 为什么先滤误差再微分：
+ *   - 滤误差 = 同时滤掉 gyro 高频噪声 + rate_sp 跳变
+ *   - 微分量来自滤波后的误差，D 项不再需要单独的 deriv_filt
+ *   - P 和 D 用的是同一条滤波后的信号，相位一致
+ */
 static float RatePD_Update(PID_t *p, float rate_sp, float gyro_dps, float dt)
 {
     float error = rate_sp - gyro_dps;
-    float deriv_raw = -(gyro_dps - p->prev_meas) / dt;
+    float deriv;
     float output;
 
-    p->deriv_filt += 0.2f * (deriv_raw - p->deriv_filt);
-    output = p->kp * error + p->kd * p->deriv_filt;
-    p->prev_error = error;
-    p->prev_meas = gyro_dps;
+    /* 误差一阶 LPF，alpha = 0.45（与之前 deriv_filt 一致） */
+    p->error_filt += 0.45f * (error - p->error_filt);
+
+    /* D 项：滤波误差的微分 */
+    deriv = (p->error_filt - p->prev_error_filt) / dt;
+
+    output = p->kp * p->error_filt + p->kd * deriv;
+
+    p->prev_error      = error;
+    p->prev_meas       = gyro_dps;
+    p->prev_error_filt = p->error_filt;
 
     if (output > p->out_limit) output = p->out_limit;
     if (output < -p->out_limit) output = -p->out_limit;
@@ -1250,7 +683,7 @@ static uint16_t soft_stop_step(uint16_t start_us, uint32_t elapsed_ms)
                       ((span * elapsed_ms) / SOFT_STOP_TIME_MS));
 }
 
-/* ---- PID 定时器（TIM2�?50Hz）初始化 ---- */
+/* ---- PID 定时器（TIM2, 150Hz）初始化 ---- */
 static void PID_Timer_Init(void)
 {
     TIM_TimeBaseInitTypeDef tim_base_init = {0};
@@ -1259,8 +692,8 @@ static void PID_Timer_Init(void)
 
     /* TIM2 时钟 = SystemCoreClock / (PSC+1)
      * V3F SystemCoreClock = 120MHz
-     * PSC = 119 �?120MHz / 120 = 1MHz (1us 分辨�?
-     * ARR = 6666 �?1MHz / (6666+1) = 150.0Hz
+     * PSC = 119 → 120MHz / 120 = 1MHz (1us 分辨率）
+     * ARR = 6666 → 1MHz / (6666+1) = 150.0Hz
      */
     tim_base_init.TIM_Prescaler = (uint16_t)((SystemCoreClock / 1000000UL) - 1UL);
     tim_base_init.TIM_Period = PID_PERIOD_US - 1U;
@@ -1269,12 +702,36 @@ static void PID_Timer_Init(void)
     TIM_TimeBaseInit(TIM2, &tim_base_init);
 
     TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
-    NVIC_SetPriority(TIM2_IRQn, 0x40);  /* 低于 USART1 (0x00)，高�?USART3 (0x80) */
+    NVIC_SetPriority(TIM2_IRQn, 0x40);  /* 低于 USART1 (0x00)，高于 USART3 (0x80) */
     NVIC_EnableIRQ(TIM2_IRQn);
     TIM_Cmd(TIM2, ENABLE);
 }
 
-/* ---- PID 主函数（�?TIM2 ISR 直接调用 @ 150Hz�?--- */
+/*
+ * ============================================================================
+ * PID_Tick — 飞控主循环，由 TIM2 ISR 直接调用 @ 150Hz (dt = 6.667ms)
+ * ============================================================================
+ *
+ * 完整控制链（从上到下依次执行）：
+ *
+ *   [1] 角速度看门狗 — 安全保护，检测失控立即 disarm
+ *   [2] 重载 PID 参数 — 支持 VOFA Commander 在线调参
+ *   [3] Soft-stop 检测 — tr 固定油门模式下的油门低位缓停
+ *   [4] 传感器读取 — 原始 gyro (deg/s) + 18Hz LPF 得到控制用 gyro
+ *   [5] OF0 光流速度估计 — 互补滤波融合光流+IMU 加速度
+ *   [6] 光流状态机 — 判断 flow_ok，选择速度源（位置环/摇杆/零）
+ *   [7] 外环 @ 75Hz — 角度误差(deg) → 角速度期望(deg/s)，P 控制器
+ *   [8] 内环 @ 150Hz — 角速度误差(deg/s) → 电机力矩修正(us)，PD 控制器
+ *   [9] 油门目标优先级 — 缓升 > tr override > RC 摇杆 > 高度控制
+ *  [10] 高度保护 — TOF 硬高度下限，自动减油门防撞地
+ *  [11] 油门缓变 — 对称 ±2us/tick (300us/s) 防止桨叶松脱
+ *  [12] 偏航前馈 — 油门越高反扭越大，按油门比例补偿 yaw
+ *  [13] 电机混控 — X 型机架矩阵，油门 + 三轴修正 → 四路 PWM
+ *  [14] 单电机测试 — tm1~tm4 直通，其他三路 PWM_MIN
+ *  [15] Slew rate 限幅 — 双向限制每路 PWM 步进量
+ *  [16] PWM 输出 — 四路脉冲写入 TIMx CCR
+ * ============================================================================
+ */
 void PID_Tick(void)
 {
     HeightEstimator_Update(g_sys_tick);
@@ -1283,8 +740,13 @@ void PID_Tick(void)
         return;
     }
 
-    /* ---- 角速度看门�?----
-     * 任意�?|gyro_dps| 持续超过 500dps 超过 50ms�?0 �?PID 周期�?     * 则判定为失控（电调失�?混控反向），立即强制 disarm�?*/
+    /*
+     * [1] 角速度看门狗
+     * 输入：gyro_dps[0/1/2] (deg/s)，三轴原始角速度
+     * 逻辑：任意轴 |gyro| > 500 deg/s 连续 10 tick (≈50ms) → 触发
+     * 输出：强制 PWM_Lock() + disarm，清空全部 PID 状态
+     * 目的：检测电调失控、混控反向等致命故障，防止全油门炸机
+     */
     {
         static uint8_t s_overspeed_cnt = 0U;
         float gx = g_shared_sensor.gyro_dps[0];
@@ -1333,7 +795,7 @@ void PID_Tick(void)
         }
     }
 
-    /* 重新加载 PID 参数（支持在线调参） */
+    /* [2] 重载 PID 参数 — 每 tick 从 volatile 全局变量同步到 PID 结构体，支持在线调参 */
     pid_roll.kp  = g_kp_roll;
     pid_roll.ki  = 0.0f;
     pid_roll.kd  = g_kd_roll;
@@ -1405,16 +867,46 @@ void PID_Tick(void)
         return;
     }
 
-    /* 读取传感器（每个 PID tick 都需要最新角速度�?*/
+    /*
+     * [4] 传感器读取
+     * =========================================================================
+     * 输入：g_shared_sensor.gyro_dps[0/1/2] — V5F IMU 角速度 (deg/s)
+     * 输出：gyro_{roll,pitch}_ctrl_dps = 原始 gyro（供 VOFA 遥测）
+     *       gyro_yaw_dps — yaw 原始值
+     * 噪声抑制交给 RatePD_Update 内部的误差 LPF (alpha=0.2)。
+     */
     float gyro_roll_dps  = g_shared_sensor.gyro_dps[0];
     float gyro_pitch_dps = g_shared_sensor.gyro_dps[1];
     float gyro_yaw_dps   = g_shared_sensor.gyro_dps[2];
 
-    gyro_roll_ctrl_dps += RATE_GYRO_LPF_ALPHA * (gyro_roll_dps - gyro_roll_ctrl_dps);
-    gyro_pitch_ctrl_dps += RATE_GYRO_LPF_ALPHA * (gyro_pitch_dps - gyro_pitch_ctrl_dps);
+    gyro_roll_ctrl_dps  = gyro_roll_dps;
+    gyro_pitch_ctrl_dps = gyro_pitch_dps;
 
+    /* [5] OF0 互补滤波：光流积分 + IMU 加速度预测 → 速度 (cm/s) */
     OF0_Estimator_Update(PID_DT);
 
+    /*
+     * [6] 光流状态机 — 判断光流数据是否可用，选择速度指令源
+     * =========================================================================
+     * 输入：
+     *   g_shared_sensor.ekf_v{x,y}_cmps  — EKF 速度 (cm/s)，机体/大地系
+     *   g_shared_sensor.ekf_p{x,y}_cm    — EKF 位置 (cm)，大地系
+     *   g_shared_sensor.flow_quality     — 光流质量分数
+     *   g_shared_sensor.ekf_flags        — bit5=valid, bit7=timeout
+     * 输出：
+     *   flow_vel_target_{x,y}_cmps — 速度指令 (cm/s)，大地系 X/Y
+     *   flow_{roll,pitch}_target_deg — 光流角度输出 (deg)，叠加到手控上
+     *   flow_vel_err_{forward,right}_cmps — 速度误差 (cm/s)，机体系，调试用
+     * =========================================================================
+     * 三种工作模式（优先级递减）：
+     *   a) 位置模式 (fo=1, fs1=1)：位置 P → 速度指令 → 角度指令
+     *   b) 摇杆速度模式 (fs0=1, fo=0)：摇杆 → 速度指令 → 角度指令
+     *   c) 纯手控模式 (fo=0, fs0=0)：flow 角度输出 = 0，全手控
+     * 速率分频：
+     *   - 位置环 run @ 25Hz (s_flow_cycle==0, 即每 6 tick)
+     *   - 速度→角度 run @ 50Hz (s_flow_cycle%3==0, 即每 3 tick)
+     *   - 其他 tick 仅判断 flow_ok，不更新指令
+     */
     {
         static uint8_t s_flow_cycle = 0U;
         uint32_t ekf_mark = g_shared_sensor.ekf_update_tick;
@@ -1501,17 +993,31 @@ void PID_Tick(void)
             }
 
             if ((s_flow_cycle % 3U) == 0U) {
-                float vx_err_earth = flow_vel_target_x_cmps - g_shared_sensor.ekf_vx_cmps;
-                float vy_err_earth = flow_vel_target_y_cmps - g_shared_sensor.ekf_vy_cmps;
                 float forward_err;
                 float right_err;
                 float lim = g_flow_angle_limit_deg;
 
                 if (g_shared_sensor.flow_source_active == 2U) {
-                    /* Bench-verified installed OF2 axes: X=forward, Y=right. */
-                    forward_err = vx_err_earth;
-                    right_err = vy_err_earth;
+                    /* OF2 velocity is body-frame X=forward, Y=right.  Position
+                     * targets are earth-frame, so rotate only the fs1 target
+                     * back into the current body frame before comparison. */
+                    if (g_flow_pos_enable) {
+                        float yaw_r = g_shared_sensor.yaw * 0.017453293f;
+                        float cy = cosf(yaw_r);
+                        float sy = sinf(yaw_r);
+                        float target_forward =
+                            cy * flow_vel_target_x_cmps + sy * flow_vel_target_y_cmps;
+                        float target_right =
+                            -sy * flow_vel_target_x_cmps + cy * flow_vel_target_y_cmps;
+                        forward_err = target_forward - g_shared_sensor.ekf_vx_cmps;
+                        right_err = target_right - g_shared_sensor.ekf_vy_cmps;
+                    } else {
+                        forward_err = flow_vel_target_x_cmps - g_shared_sensor.ekf_vx_cmps;
+                        right_err = flow_vel_target_y_cmps - g_shared_sensor.ekf_vy_cmps;
+                    }
                 } else {
+                    float vx_err_earth = flow_vel_target_x_cmps - g_shared_sensor.ekf_vx_cmps;
+                    float vy_err_earth = flow_vel_target_y_cmps - g_shared_sensor.ekf_vy_cmps;
                     float yaw_r = g_shared_sensor.yaw * 0.017453293f;
                     float cy = cosf(yaw_r);
                     float sy = sinf(yaw_r);
@@ -1526,8 +1032,28 @@ void PID_Tick(void)
             }
         }
     }
-    /* 外环：姿态角 �?角速度期望 @ 75Hz（每 2 �?PID tick 跑一次）
-     * 直接用欧拉角线性误差（V5F IMU 已做姿态解算），目标水�?0°�?*/
+    /*
+     * [7] 外环 — 姿态角度控制 @ 75Hz（每 2 tick 跑一次）
+     * =========================================================================
+     * 输入：
+     *   ctrl_{roll,pitch}_target_deg — 目标姿态角 (deg)，手控 + 光流叠加
+     *   g_shared_sensor.{roll,pitch}  — V5F IMU 当前姿态角 (deg)
+     *   yaw_angle_target              — 偏航锁定目标 (deg)，解锁瞬间捕获
+     *   g_shared_sensor.yaw           — V5F IMU 当前偏航角 (deg)
+     *   STICK_YAW                     — 偏航摇杆 (-120..120)
+     * 步骤：
+     *   a) 手控角度 = stick_norm * MANUAL_ATT_MAX_DEG (最大 ±6°)
+     *   b) 目标角度 = 手控角度 + 光流角度（clip 到 ±ctrl_att_limit_deg）
+     *   c) 角度误差 = 目标角度 - 当前角度
+     *   d) 角速度期望 = 角度误差 * kp_angle（clip 到 ±rate_limit）
+     *   e) 偏航直接按摇杆比例映射到 ±YAW_RATE_LIMIT_DPS (30 deg/s)
+     * 输出：
+     *   roll_angle_rate_sp  — roll 角速度期望 (deg/s)
+     *   pitch_angle_rate_sp — pitch 角速度期望 (deg/s)
+     *   yaw_angle_rate_sp   — yaw 角速度期望 (deg/s)
+     *   yaw_angle_error     — 偏航角度误差 (deg)，VOFA 遥测用
+     * 频率：75Hz（PID_DT * 2），外环带宽约为内环的 1/5~1/10
+     */
     {
         static uint8_t s_pid_cycle = 0;
         s_pid_cycle++;
@@ -1542,12 +1068,16 @@ void PID_Tick(void)
                 stick_norm(STICK_ROLL) * MANUAL_ATT_MAX_DEG;
             float manual_pitch_target_deg = stick_vel_pitch_active ? 0.0f :
                 stick_norm(STICK_PITCH) * MANUAL_ATT_MAX_DEG;
+            /* Keep manual attitude authority independent from a smaller optical-flow
+             * angle limit (for example fl4 during velocity-loop tuning). */
+            float ctrl_att_limit_deg = (g_flow_angle_limit_deg > MANUAL_ATT_MAX_DEG) ?
+                                       g_flow_angle_limit_deg : MANUAL_ATT_MAX_DEG;
             ctrl_roll_target_deg = clampf(manual_roll_target_deg + flow_roll_target_deg,
-                                          -g_flow_angle_limit_deg,
-                                           g_flow_angle_limit_deg);
+                                          -ctrl_att_limit_deg,
+                                           ctrl_att_limit_deg);
             ctrl_pitch_target_deg = clampf(manual_pitch_target_deg + flow_pitch_target_deg,
-                                           -g_flow_angle_limit_deg,
-                                            g_flow_angle_limit_deg);
+                                           -ctrl_att_limit_deg,
+                                            ctrl_att_limit_deg);
             float err_roll  = ctrl_roll_target_deg - g_shared_sensor.roll;
             float err_pitch = ctrl_pitch_target_deg - g_shared_sensor.pitch;
             float err_yaw   = wrap_angle_deg(yaw_angle_target - g_shared_sensor.yaw);
@@ -1563,7 +1093,29 @@ void PID_Tick(void)
         }
     }
 
-    /* 内环：角速度 PD @ 150Hz（每�?PID tick 都跑�?*/
+    /*
+     * [8] 内环 — 角速度 PD 控制 @ 150Hz（每个 tick 都跑）
+     * =========================================================================
+     * 输入：
+     *   {roll,pitch,yaw}_angle_rate_sp — 外环输出的角速度期望 (deg/s)
+     *   gyro_{roll,pitch}_ctrl_dps     — roll/pitch 原始角速度 (deg/s)，不经 LPF
+     *   gyro_yaw_dps                   — yaw 原始角速度 (deg/s)
+     * 步骤：
+     *   a) roll/pitch: RatePD_Update — PD 控制器
+     *      - error = rate_sp - 原始 gyro
+     *      - 对 error 做一阶 LPF 得到 error_filt
+     *      - P 项用 error_filt，D 项用 error_filt 的微分
+     *      - P 和 D 共享同一条滤波信号，相位一致
+     *   b) roll/pitch: 叠加 rate FF（角速度期望 * ff_gain），补偿内环相位滞后
+     *   c) yaw: PID_Update — PID 控制器（有 I 项用于消偏航静差）
+     *   d) 三轴输出 clip 到 ±g_pid_out_limit（默认 180us）
+     * 输出：
+     *   out_roll  — roll 轴电机力矩修正量 (us)，正值 = 右倾修正
+     *   out_pitch — pitch 轴电机力矩修正量 (us)，正值 = 前倾修正
+     *   out_yaw   — yaw 轴电机力矩修正量 (us)，正值 = CCW
+     * 注：这里输出的 out_* 是 PID 修正量（单位 us），不是最终 PWM，
+     *     需要和 thr_base 一起送入混控矩阵才得到四路电机 PWM。
+     */
     out_roll  = RatePD_Update(&pid_roll,  roll_angle_rate_sp,  gyro_roll_ctrl_dps,  PID_DT);
     out_pitch = RatePD_Update(&pid_pitch, pitch_angle_rate_sp, gyro_pitch_ctrl_dps, PID_DT);
     roll_rate_ff_out = g_roll_rate_ff * roll_angle_rate_sp;
@@ -1573,7 +1125,21 @@ void PID_Tick(void)
     out_yaw   = PID_Update(&pid_yaw,   yaw_angle_rate_sp,   gyro_yaw_dps,   PID_DT);
     yaw_ff_out = 0.0f;
 
-    /* 油门目标：缓升测�?> tr override > RC 摇杆 */
+    /*
+     * [9] 油门目标优先级 — 确定本次 tick 的基础油门值 thr_target (us)
+     * =========================================================================
+     * 输入源（优先级从高到低）：
+     *   a) 缓升测试 (key4 触发)：1000 → 1550us，5 秒线性爬升
+     *   b) tr override (g_thr_override > 1)：固定油门值，PID 调试架用
+     *   c) RC 摇杆 (STICK_THROTTLE)：-120..120 → 1000~1490us 分段映射
+     *      - 下半段 (-120..0) → 1000..1400us (THR_RC_MID)
+     *      - 上半段 (0..120)   → 1400..g_thr_rc_max_us
+     *   d) 高度控制覆盖：若 HeightControl_Update 返回接管，用其输出的 target
+     * 输出：
+     *   thr_target — 本 tick 油门目标 (us)，未经过缓变
+     *   height_owns_collective — 高度环是否接管了油门
+     */
+    /* 油门目标：缓升 > tr override > RC 摇杆 */
     float thr_target = (float)PWM_MIN_PULSE_US;
     float height_collective_target = (float)PWM_MIN_PULSE_US;
     uint8_t height_owns_collective;
@@ -1613,6 +1179,7 @@ void PID_Tick(void)
                          (float)thr *
                          (float)(g_thr_rc_max_us - THR_RC_MID_US) / 120.0f;
         }
+        thr_target = ManualTakeover_Target(thr, thr_target);
     }
 
     height_owns_collective = HeightControl_Update(thr_target, g_sys_tick,
@@ -1621,7 +1188,20 @@ void PID_Tick(void)
         thr_target = height_collective_target;
     }
 
-    /* 高度保护 */
+    /*
+     * [10] 高度保护 — TOF 硬高度下限，自动减油门防止撞地
+     * =========================================================================
+     * 输入：
+     *   g_shared_sensor.tof_distance_mm — TOF 测距 (mm)，40~4000 有效
+     * 分级响应：
+     *   >= 500mm (SOFTSTOP) → 持续 200ms 后触发 soft_stop，缓停
+     *   >= 350mm (HIGH)     → 持续 200ms 后每 tick 减 3us，否则减 1us
+     *   >= 250mm (LOW)      → 每 tick 减 1us，阻止加速爬升
+     *   < 250mm             → 不限制，放开保护
+     * 输出：
+     *   height_guard_cap_us — 油门帽 (us)，thr_target 不能超过此值
+     * 仅在高度环未接管 + 非测试模式下生效
+     */
     if (g_height_guard_enable && height_owns_collective == 0U &&
         g_test_motor == 0U && g_test_ramp_active == 0U) {
         uint16_t tof_mm = g_shared_sensor.tof_distance_mm;
@@ -1696,8 +1276,13 @@ void PID_Tick(void)
         height_guard_cap_us = thr_target;
     }
 
-    /* Height ACTIVE/SENSOR_HOLD/DEGRADED already owns the collective path.
-     * Manual/test throttle retains the original slow symmetric ramp. */
+    /*
+     * [11] 油门缓变 — 对称斜坡 ±2us/tick ≈ ±300us/s
+     * =========================================================================
+     * 为什么需要：自紧螺纹桨减速过快时，桨叶惯性会反向打松螺母。
+     * 1450→1000 约需 1.5s。紧急停机走 PWM_Lock() 不受此限。
+     * 高度环接管时跳过缓变，由高度环自己控制油门变化率。
+     */
     if (height_owns_collective != 0U) {
         thr_base = thr_target;
     } else {
@@ -1710,13 +1295,38 @@ void PID_Tick(void)
         }
     }
 
+    /*
+     * [12] 偏航前馈 — 油门越高反扭越大，按油门比例补偿 yaw
+     * =========================================================================
+     * 输入：thr_base (us)，当前油门值
+     * 触发：thr_base > YAW_FF_START_US (1400us) 且 g_yaw_ff_limit > 0
+     * 公式：yaw_ff_out = g_yaw_ff_gain * (thr_base - 1400)，clip 到 ±g_yaw_ff_limit
+     *       g_yaw_ff_gain 当前为 -0.22（负值因为 CW 桨反扭方向）
+     * 输出：out_yaw 叠加 FF 后重新 clip
+     */
     if (g_test_motor == 0U && thr_base > (float)YAW_FF_START_US && g_yaw_ff_limit > 0.0f) {
         yaw_ff_out = g_yaw_ff_gain * (thr_base - (float)YAW_FF_START_US);
         yaw_ff_out = clampf(yaw_ff_out, -g_yaw_ff_limit, g_yaw_ff_limit);
         out_yaw = clampf(out_yaw + yaw_ff_out, -g_pid_out_limit, g_pid_out_limit);
     }
 
-    /* 电机混控（X 型机架） */
+    /*
+     * [13] 电机混控 — X 型机架，油门 + 三轴修正 → 四路 PWM (us)
+     * =========================================================================
+     * 输入：
+     *   thr_base      — 基础油门 (us)，已经过缓变
+     *   out_roll      — roll 轴 PID 修正 (us)，正值 = 右倾力矩
+     *   out_pitch     — pitch 轴 PID 修正 (us)，正值 = 前倾力矩
+     *   out_yaw       — yaw 轴 PID 修正 (us)，正值 = CCW
+     * 混控矩阵（X 型机架，M1=FR CCW, M2=FL CW, M3=RL CCW, M4=RR CW）：
+     *   M1 = T + R - P - Y  (FR CCW)
+     *   M2 = T - R - P + Y  (FL CW)
+     *   M3 = T - R + P + Y  (RL CCW)
+     *   M4 = T + R + P - Y  (RR CW)
+     * 输出：
+     *   m1~m4 — 四路电机 PWM 脉冲宽度 (us)，clip 到 PWM_MIN~PWM_SAFE_MAX
+     * 注：HeightControl_ApplyHeadroom 会在油门接近上限时为 roll/pitch 预留修正余量
+     */
     float out_roll_mix = out_roll;
     HeightControl_ApplyHeadroom(out_roll_mix, out_pitch, out_yaw, &thr_base);
     uint16_t m1 = mix_clamp(thr_base + out_roll_mix - out_pitch - out_yaw); /* FR CCW */
@@ -1724,7 +1334,13 @@ void PID_Tick(void)
     uint16_t m3 = mix_clamp(thr_base - out_roll_mix + out_pitch - out_yaw); /* RL CCW */
     uint16_t m4 = mix_clamp(thr_base + out_roll_mix + out_pitch + out_yaw); /* RR CW  */
 
-    /* 单电机测试模�?*/
+    /*
+     * [14] 单电机测试模式
+     * =========================================================================
+     * 正常模式 (g_test_motor == 0)：四路走混控输出
+     * 测试模式 (g_test_motor == 1~4)：选中电机直通 thr_base，其余三路 PWM_MIN
+     * 测试模式下跳过 slew limit，油门直接响应无缓变
+     */
     if (g_test_motor != 0U) {
         uint16_t test_pwm;
         float v = thr_base;
@@ -1738,7 +1354,13 @@ void PID_Tick(void)
         else if (g_test_motor == 4U) m4 = test_pwm;
     }
 
-    /* 双向 slew limit */
+    /*
+     * [15] PWM 双向 slew rate 限幅
+     * =========================================================================
+     * 限制每路电机 PWM 的步进量，防止突变产生电流尖峰或机械冲击。
+     * slew = g_motor_slew_us (默认 17us/tick)，每 tick 最多变化 ±17us。
+     * 单电机测试模式下跳过限幅，保证直通响应。
+     */
     if (g_test_motor == 0U) {
         m1 = pwm_slew(m1, prev_pwm[0]);
         m2 = pwm_slew(m2, prev_pwm[1]);
@@ -1750,6 +1372,12 @@ void PID_Tick(void)
     prev_pwm[2] = m3;
     prev_pwm[3] = m4;
 
+    /*
+     * [16] 最终 PWM 输出 — 四路脉冲写入 TIMx CCR 寄存器
+     * =========================================================================
+     * m1~m4 (us) → TIMx 比较寄存器 → 四路 PWM 信号 → 电调 → 电机
+     * PWM 范围：PWM_MIN_PULSE_US (1000us) ~ PWM_SAFE_MAX_US (1750us)
+     */
     PWM_SetAllPulseUs(m1, m2, m3, m4);
 }
 
@@ -1772,12 +1400,12 @@ int main(void)
     NVIC_WakeUp_V5F(Core_V5F_StartAddr);
 #endif
 
-    /* 启动 PID 定时�?TIM2 @ 150Hz */
+    /* 启动 PID 定时器 TIM2 @ 150Hz */
     PID_Timer_Init();
 
     /* 调参期保护：PID 输出限收紧到 ±100us，避免单边修正量瞬间过猛
-     * �?1.5~2kg 大机架顶离架子。等 P/D 全部调完且经过满油门验证后，
-     * 可以放宽�?±150~200。积分限保持小，避免长期偏置时狂涨�?*/
+     * 把 1.5~2kg 大机架顶离架子。等 P/D 全部调完且经过满油门验证后，
+     * 可以放宽到 ±150~200。积分限保持小，避免长期偏置时狂涨。 */
     PID_Init(&pid_roll,        g_kp_roll,        0.0f,             g_kd_roll,        180.0f, 200.0f);
     PID_Init(&pid_pitch,       g_kp_pitch,       0.0f,             g_kd_pitch,       180.0f,  80.0f);
     PID_Init(&pid_yaw,         g_kp_yaw,         g_ki_yaw,         g_kd_yaw,         180.0f,  50.0f);
@@ -1804,7 +1432,7 @@ int main(void)
                  (g_shared_sensor.rc_sw == RC_SW_HEIGHT_HOLD)) &&
                 (g_shared_sensor.rc_link_ok == 1U);
 
-            /* 上锁条件：RC 丢失 �?过流 */
+            /* 上锁条件：RC 丢失 或 过流 */
             if (!rc_mode_armed || v307_overcurrent) {
                 NVIC_DisableIRQ(TIM2_IRQn);
                 PWM_Lock();
@@ -1849,7 +1477,7 @@ int main(void)
             uint8_t in_fly = ((g_shared_sensor.rc_sw == RC_SW_FLY) &&
                               (g_shared_sensor.rc_link_ok == 1U));
 
-            /* 解锁条件：RC 飞控档位 + 油门最�?+ 无过�?*/
+            /* 解锁条件：RC 飞控档位 + 油门最低 + 无过流 */
             if (in_fly && !v307_overcurrent && STICK_THROTTLE <= ARM_THR_THRESHOLD) {
                 if (PWM_Arm() == PWM_OK) {
                     NVIC_DisableIRQ(TIM2_IRQn);
@@ -1901,259 +1529,40 @@ int main(void)
 
         if (g_vofa_enable && vofa_accum >= 1000U) {
             vofa_accum %= 1000U;
-            float vofa[8];
-            float pwm1 = (float)PWM_GetPulseUs(PWM_MOTOR1);
-            float pwm2 = (float)PWM_GetPulseUs(PWM_MOTOR2);
-            float pwm3 = (float)PWM_GetPulseUs(PWM_MOTOR3);
-            float pwm4 = (float)PWM_GetPulseUs(PWM_MOTOR4);
-            float throttle_avg = (pwm1 + pwm2 + pwm3 + pwm4) * 0.25f;
 
-            if (g_vofa_view == VOFA_VIEW_IMU) {
-                vofa[0] = g_shared_sensor.roll;
-                vofa[1] = g_shared_sensor.pitch;
-                vofa[2] = g_shared_sensor.yaw;
-                vofa[3] = g_shared_sensor.gyro_dps[0];
-                vofa[4] = g_shared_sensor.gyro_dps[1];
-                vofa[5] = g_shared_sensor.gyro_dps[2];
-                vofa[6] = (float)(g_sys_tick - sensor_seen_local_ms);
-                vofa[7] = (float)sensor_seen_update_tick;
-                BSP_VOFA_Send(vofa, 8U);
-            } else if (g_vofa_view == VOFA_VIEW_FLOW) {
-                if (g_vofa_axis == 0U) {
-                    /* OF0 estimator diagnostic page. Independent of vx axis selection. */
-                    vofa[0] = of0_vx_cmps;
-                    vofa[1] = of0_vy_cmps;
-                    vofa[2] = of0_raw_vx_cmps;
-                    vofa[3] = of0_raw_vy_cmps;
-                    vofa[4] = (float)g_shared_sensor.flow_dx_fix_cmps;
-                    vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
-                    vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = OF0_GetHeightCm();
-                } else if (g_vofa_axis == 1U) {
-                    /* X轴 / Pitch: 位置→速度→倾角→角速度 (OF2 fusion mode) */
-                    vofa[0] = (float)g_shared_sensor.flow_mode;
-                    vofa[1] = (float)g_shared_sensor.flow_state;
-                    vofa[2] = (float)g_shared_sensor.flow_dx_cmps;
-                    vofa[3] = (float)g_shared_sensor.flow_dy_cmps;
-                    vofa[4] = (float)g_shared_sensor.flow_dx_fix_cmps;
-                    vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
-                    vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = (float)g_shared_sensor.flow_sample_count;
-                } else if (g_vofa_axis == 2U) {
-                    /* Y轴 / Roll: 位置→速度→倾角→角速度 (OF2 fusion mode) */
-                    vofa[0] = (float)g_shared_sensor.flow_mode;
-                    vofa[1] = (float)g_shared_sensor.flow_integ_x_cm;
-                    vofa[2] = (float)g_shared_sensor.flow_integ_y_cm;
-                    vofa[3] = (float)g_shared_sensor.lf_range_distance_cm;
-                    vofa[4] = (float)g_shared_sensor.flow_dx_fix_cmps;
-                    vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
-                    vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = (float)g_shared_sensor.flow_sample_count;
-                } else {
-                    /* vd2 vx3: LF UART/parser diagnostics, independent of decode success. */
-                    vofa[0] = (float)g_shared_sensor.lf_dbg_irq_count;
-                    vofa[1] = (float)g_shared_sensor.lf_dbg_rx_byte_count;
-                    vofa[2] = (float)g_shared_sensor.lf_dbg_frame_ok_count;
-                    vofa[3] = (float)g_shared_sensor.lf_dbg_checksum_error_count;
-                    vofa[4] = (float)g_shared_sensor.lf_dbg_len_error_count;
-                    vofa[5] = (float)g_shared_sensor.lf_dbg_last_frame_id;
-                    vofa[6] = (float)g_shared_sensor.lf_dbg_last_frame_len;
-                    vofa[7] = (float)g_shared_sensor.lf_dbg_last_rx_byte;
-                }
-                BSP_VOFA_Send(vofa, 8U);
-            } else if (g_vofa_view == VOFA_VIEW_CALIB) {
-                switch (g_vofa_axis) {
-                case 3U: /* vx3: Phase 4 — delay test (OF0 + acc_nav + height + quality + vt) */
-                    {
-                        float roll_r  = g_shared_sensor.roll  * 0.017453293f;
-                        float pitch_r = g_shared_sensor.pitch * 0.017453293f;
-                        float cr = cosf(roll_r), sr = sinf(roll_r);
-                        float cp = cosf(pitch_r), sp = sinf(pitch_r);
-                        float ax = g_shared_sensor.accel_g[0];
-                        float ay = g_shared_sensor.accel_g[1];
-                        float az = g_shared_sensor.accel_g[2];
-                        vofa[0] = (float)g_sys_tick;
-                        vofa[1] = (float)g_shared_sensor.flow_dx_raw;
-                        vofa[2] = (float)g_shared_sensor.flow_dy_raw;
-                        vofa[3] = cp * ax + sr * sp * ay + cr * sp * az;
-                        vofa[4] = cr * ay - sr * az;
-                        vofa[5] = g_shared_sensor.tof_distance_mm * 0.1f;
-                        vofa[6] = (float)g_shared_sensor.flow_quality;
-                        vofa[7] = (float)g_shared_sensor.calib_test_flag;
-                    }
-                    break;
-                case 2U: /* vx2: Phase 3 — rotation compensation (OF0 + gyro + height + vt) */
-                    vofa[0] = (float)g_shared_sensor.ekf_update_tick;
-                    vofa[1] = g_shared_sensor.ekf_px_cm;
-                    vofa[2] = g_shared_sensor.ekf_py_cm;
-                    vofa[3] = g_shared_sensor.ekf_vx_cmps;
-                    vofa[4] = g_shared_sensor.ekf_vy_cmps;
-                    vofa[5] = g_shared_sensor.ekf_vx_obs_cmps;
-                    vofa[6] = g_shared_sensor.ekf_vy_obs_cmps;
-                    vofa[7] = (float)g_shared_sensor.ekf_flags;
-                    break;
-                case 1U: /* vx1: Phase 2 — pure translation (OF0 + height + quality + roll/pitch + vt) */
-                    vofa[0] = (float)g_sys_tick;
-                    vofa[1] = (float)g_shared_sensor.flow_dx_raw;
-                    vofa[2] = (float)g_shared_sensor.flow_dy_raw;
-                    vofa[3] = (float)g_shared_sensor.lf_range_distance_cm;
-                    vofa[4] = g_shared_sensor.tof_distance_mm * 0.1f;
-                    vofa[5] = (float)g_shared_sensor.flow_quality;
-                    vofa[6] = g_shared_sensor.roll;
-                    vofa[7] = g_shared_sensor.pitch;
-                    break;
-                case 0U:
-                default: /* vx0: Phase 1 — IMU static 60s (acc + gyro + roll/pitch) */
-                    vofa[0] = (float)g_sys_tick;
-                    vofa[1] = g_shared_sensor.accel_g[0];
-                    vofa[2] = g_shared_sensor.accel_g[1];
-                    vofa[3] = g_shared_sensor.gyro_dps[0];
-                    vofa[4] = g_shared_sensor.gyro_dps[1];
-                    vofa[5] = g_shared_sensor.gyro_dps[2];
-                    vofa[6] = g_shared_sensor.roll;
-                    vofa[7] = g_shared_sensor.pitch;
-                    break;
-                }
-                BSP_VOFA_Send(vofa, 8U);
-            } else if (g_vofa_view == VOFA_VIEW_HEIGHT) {
-                if (g_vofa_axis == 1U) {
-                    /* vd5 vx1: switch-edge capture and collective handover. */
-                    vofa[0] = g_hover_throttle_us;
-                    vofa[1] = s_height_hover_base_us;
-                    vofa[2] = thr_base;
-                    vofa[3] = s_height_est.height_filt_m;
-                    vofa[4] = s_height_est.vz_filt_mps;
-                    vofa[5] = s_height_correction_us;
-                    vofa[6] = (s_height_mode != HEIGHT_MODE_OFF) ?
-                        (float)(g_sys_tick - s_height_transition_start_ms) : 0.0f;
-                    vofa[7] = (float)HeightControl_DiagFlags();
-                } else {
-                    /* vd5 vx0: complete asynchronous TOF -> height-control chain. */
-                    vofa[0] = (float)s_height_est.raw_mm;
-                    vofa[1] = s_height_est.source_dt_ms;
-                    vofa[2] = s_height_est.height_filt_m;
-                    vofa[3] = s_height_est.vz_filt_mps;
-                    vofa[4] = s_height_target_m;
-                    vofa[5] = s_height_target_vz_mps;
-                    vofa[6] = s_height_correction_us;
-                    vofa[7] = (float)HeightControl_DiagFlags();
-                }
-                BSP_VOFA_Send(vofa, 8U);
-            } else if (g_vofa_view == VOFA_VIEW_EKFCTL) {
-                if (g_vofa_axis == 3U) {
-                    /* vd4 vx3: OF2 velocity-control data versus integration data. */
-                    vofa[0] = (float)g_shared_sensor.flow_dx_cmps;
-                    vofa[1] = (float)g_shared_sensor.flow_dx_fix_cmps;
-                    vofa[2] = (float)g_shared_sensor.flow_dy_cmps;
-                    vofa[3] = (float)g_shared_sensor.flow_dy_fix_cmps;
-                    vofa[4] = g_shared_sensor.of2_bias_vx_cmps;
-                    vofa[5] = g_shared_sensor.of2_bias_vy_cmps;
-                    vofa[6] = (float)g_shared_sensor.flow_quality;
-                    vofa[7] = (float)flow_ok_debug;
-                } else if (g_vofa_axis == 2U) {
-                    /* vd4 vx2: complete position-loop chain. */
-                    vofa[0] = flow_pos_target_x_cm;
-                    vofa[1] = g_shared_sensor.ekf_px_cm;
-                    vofa[2] = flow_pos_target_y_cm;
-                    vofa[3] = g_shared_sensor.ekf_py_cm;
-                    vofa[4] = flow_vel_target_x_cmps;
-                    vofa[5] = g_shared_sensor.ekf_vx_cmps;
-                    vofa[6] = flow_vel_target_y_cmps;
-                    vofa[7] = g_shared_sensor.ekf_vy_cmps;
-                } else if (g_vofa_axis == 1U) {
-                    /* vd4 vx1: complete attitude cascade for bandwidth checks. */
-                    vofa[0] = ctrl_roll_target_deg;
-                    vofa[1] = g_shared_sensor.roll;
-                    vofa[2] = roll_angle_rate_sp;
-                    vofa[3] = gyro_roll_ctrl_dps;
-                    vofa[4] = ctrl_pitch_target_deg;
-                    vofa[5] = g_shared_sensor.pitch;
-                    vofa[6] = pitch_angle_rate_sp;
-                    vofa[7] = gyro_pitch_ctrl_dps;
-                } else if (s_armed == 0U) {
-                    float yaw_r = g_shared_sensor.yaw * 0.017453293f;
-                    float cy = cosf(yaw_r);
-                    float sy = sinf(yaw_r);
-                    float vx_earth = g_shared_sensor.ekf_vx_cmps;
-                    float vy_earth = g_shared_sensor.ekf_vy_cmps;
-                    float forward;
-                    float right;
+            /*
+             * 填充遥测快照：从 PID_Tick 内部静态变量取一帧数据，
+             * 交给 bsp_vofa.c 的 VOFA_Telemetry_Send 做视图分发。
+             */
+            VOFA_Snapshot_t snap;
+            snap.out_roll              = out_roll;
+            snap.out_pitch             = out_pitch;
+            snap.out_yaw               = out_yaw;
+            snap.roll_angle_rate_sp    = roll_angle_rate_sp;
+            snap.pitch_angle_rate_sp   = pitch_angle_rate_sp;
+            snap.yaw_angle_rate_sp     = yaw_angle_rate_sp;
+            snap.gyro_roll_ctrl_dps    = gyro_roll_ctrl_dps;
+            snap.gyro_pitch_ctrl_dps   = gyro_pitch_ctrl_dps;
+            snap.yaw_angle_target      = yaw_angle_target;
+            snap.yaw_angle_error       = yaw_angle_error;
+            snap.flow_roll_target_deg  = flow_roll_target_deg;
+            snap.flow_pitch_target_deg = flow_pitch_target_deg;
+            snap.ctrl_roll_target_deg  = ctrl_roll_target_deg;
+            snap.ctrl_pitch_target_deg = ctrl_pitch_target_deg;
+            snap.flow_vel_target_x_cmps = flow_vel_target_x_cmps;
+            snap.flow_vel_target_y_cmps = flow_vel_target_y_cmps;
+            snap.flow_pos_target_x_cm  = flow_pos_target_x_cm;
+            snap.flow_pos_target_y_cm  = flow_pos_target_y_cm;
+            snap.of0_vx_cmps           = of0_vx_cmps;
+            snap.of0_vy_cmps           = of0_vy_cmps;
+            snap.of0_raw_vx_cmps       = of0_raw_vx_cmps;
+            snap.of0_raw_vy_cmps       = of0_raw_vy_cmps;
+            snap.of0_height_cm         = OF0_GetHeightCm();
+            snap.sensor_seen_local_ms  = sensor_seen_local_ms;
+            snap.sensor_seen_update_tick = sensor_seen_update_tick;
+            snap.flow_ok_debug         = flow_ok_debug;
 
-                    if (g_shared_sensor.flow_source_active == 2U) {
-                        forward = vx_earth;
-                        right = vy_earth;
-                    } else {
-                        forward = cy * vx_earth + sy * vy_earth;
-                        right = -sy * vx_earth + cy * vy_earth;
-                    }
-
-                    /* Motor-safe yaw mapping diagnostic; these targets are display-only. */
-                    vofa[0] = vx_earth;
-                    vofa[1] = vy_earth;
-                    vofa[2] = forward;
-                    vofa[3] = right;
-                    vofa[4] = clampf(-g_flow_roll_gain * right, -9.0f, 9.0f);
-                    vofa[5] = clampf(-g_flow_pitch_gain * forward, -9.0f, 9.0f);
-                    vofa[6] = (float)g_shared_sensor.ekf_flags;
-                    vofa[7] = g_shared_sensor.yaw;
-                } else {
-                    /* vd4 vx0: commanded/actual velocity and attitude response. */
-                    vofa[0] = flow_vel_target_x_cmps;
-                    vofa[1] = g_shared_sensor.ekf_vx_cmps;
-                    vofa[2] = flow_vel_target_y_cmps;
-                    vofa[3] = g_shared_sensor.ekf_vy_cmps;
-                    vofa[4] = ctrl_roll_target_deg;
-                    vofa[5] = g_shared_sensor.roll;
-                    vofa[6] = ctrl_pitch_target_deg;
-                    vofa[7] = g_shared_sensor.pitch;
-                }
-                BSP_VOFA_Send(vofa, 8U);
-            } else {
-                float roll_deg  = g_shared_sensor.roll;
-                float pitch_deg = g_shared_sensor.pitch;
-                float yaw_deg   = g_shared_sensor.yaw;
-                float er = flow_roll_target_deg - roll_deg;
-                float ep = flow_pitch_target_deg - pitch_deg;
-                float ey = yaw_angle_error;
-
-                switch (g_vofa_axis) {
-                case VOFA_AXIS_PITCH:
-                    vofa[0] = flow_pitch_target_deg;
-                    vofa[1] = pitch_deg;
-                    vofa[2] = ep;
-                    vofa[3] = pitch_angle_rate_sp;
-                    vofa[4] = g_shared_sensor.gyro_dps[1];
-                    vofa[5] = out_pitch;
-                    vofa[6] = ((pwm3 + pwm4) - (pwm1 + pwm2)) * 0.5f;
-                    vofa[7] = throttle_avg;
-                    break;
-
-                case VOFA_AXIS_YAW:
-                    vofa[0] = yaw_angle_target;
-                    vofa[1] = yaw_deg;
-                    vofa[2] = ey;
-                    vofa[3] = yaw_angle_rate_sp;
-                    vofa[4] = g_shared_sensor.gyro_dps[2];
-                    vofa[5] = out_yaw;
-                    vofa[6] = ((pwm1 + pwm3) - (pwm2 + pwm4)) * 0.5f;
-                    vofa[7] = throttle_avg;
-                    break;
-
-                case VOFA_AXIS_ROLL:
-                default:
-                    vofa[0] = flow_roll_target_deg;
-                    vofa[1] = roll_deg;
-                    vofa[2] = er;
-                    vofa[3] = roll_angle_rate_sp;
-                    vofa[4] = g_shared_sensor.gyro_dps[0];
-                    vofa[5] = out_roll;
-                    vofa[6] = ((pwm1 + pwm4) - (pwm2 + pwm3)) * 0.5f;
-                    vofa[7] = throttle_avg;
-                    break;
-                }
-
-                BSP_VOFA_Send(vofa, 8U);
-            }
+            VOFA_Telemetry_Send(&snap);
         }
     }
 }

@@ -9,6 +9,8 @@ typedef struct {
     float out_limit;
     float int_limit;
     float deriv_filt;
+    float error_filt;       /* 一阶 LPF 输出 — 滤波后的误差 */
+    float prev_error_filt;  /* 上一拍 error_filt，用于 D 项微分 */
 } PID_t;
 
 void  PID_Init(PID_t *p, float kp, float ki, float kd, float out_limit, float int_limit);

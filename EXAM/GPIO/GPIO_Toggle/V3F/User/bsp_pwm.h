@@ -42,11 +42,6 @@
 /* 电调解锁时强制输出最低油门并阻塞的时间（ms）。 */
 #define PWM_ARM_DELAY_MS             3000U
 
-/* 默认测试参数。 */
-#define PWM_TEST_PULSE_US            1100U
-#define PWM_TEST_STEP_US             10U
-#define PWM_TEST_STEP_DELAY_MS       30U
-
 /* 接口返回状态码。 */
 #define PWM_OK                       0U
 #define PWM_ERROR                    1U
@@ -86,8 +81,5 @@ uint16_t PWM_GetPulseUs(uint8_t motor);
 
 /* 查询当前是否已解锁。 */
 uint8_t PWM_IsArmed(void);
-
-/* 默认测试序列：逐路缓升缓降。 */
-void PWM_TestSequence(void);
 
 #endif /* __BSP_PWM_H */

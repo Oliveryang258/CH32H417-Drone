@@ -87,37 +87,6 @@ typedef struct
     uint8_t frame_updated;       // 帧更新标志（1=有新数据，0=无更新）
 } TOF_Data_t;
 
-/**
- * @brief  调试统计信息结构体
- *
- * @note   用于诊断通信问题：
- *         - 如果 parse_error_count 很高：数据格式异常或波特率错误
- *         - 如果 ore_count 很高：接收处理太慢
- *         - 如果 line_ok_count 不增长：USART 接线或模块供电问题
- */
-typedef struct
-{
-    /* 通信统计 */
-    uint32_t irq_count;              // 中断总次数
-    uint32_t rx_byte_count;          // 接收字节总数
-    uint32_t line_ok_count;          // 成功解析的行数（d: 或 State:）
-    uint32_t parse_error_count;      // 解析错误次数（格式不匹配）
-    uint32_t overflow_count;         // 行缓冲溢出次数（单行超过 64 字节）
-
-    /* USART 错误统计 */
-    uint32_t usart_error_count;      // USART 错误总次数
-    uint32_t ore_count;              // 溢出错误次数（OverRun Error）
-    uint32_t ne_count;               // 噪声错误次数（Noise Error）
-    uint32_t fe_count;               // 帧错误次数（Frame Error）
-    uint32_t pe_count;               // 校验错误次数（Parity Error）
-    uint32_t err_byte_count;         // 错误字节总数
-
-    /* 调试信息 */
-    uint16_t last_statr;             // 最后的 USART 状态寄存器值
-    uint8_t last_rx_byte;            // 最后接收的字节
-    uint8_t last_state;              // 最后接收的状态码
-} TOF_DebugInfo_t;
-
 /* ==================== 公共 API 函数 ==================== */
 
 /**
@@ -134,20 +103,15 @@ void TOF_GetDefaultConfig(TOF_Config_t *cfg);
 TOF_Status_t TOF_InitEx(const TOF_Config_t *cfg);
 
 /**
- * @brief  使用默认配置初始化 TOF 驱动（测试用）
+ * @brief  使用默认配置初始化 TOF 驱动
  * @return TOF_OK: 成功  TOF_ERROR: 失败
  */
-TOF_Status_t TOF_Test_Init(void);
+TOF_Status_t TOF_Init(void);
 
 /**
  * @brief  TOF 数据处理函数（主循环调用，当前为空）
  */
 void TOF_Process(void);
-
-/**
- * @brief  TOF 测试处理函数（自动打印接收到的数据）
- */
-void TOF_Test_Process(void);
 
 /**
  * @brief  USART 中断服务函数（在对应 USART_IRQHandler 中调用）
@@ -173,13 +137,6 @@ void TOF_ClearDataReady(void);
  * @note   返回的指针指向内部静态变量，不要修改
  */
 const TOF_Data_t *TOF_GetData(void);
-
-/**
- * @brief  获取调试统计信息
- * @return 指向调试信息结构体的只读指针
- * @note   用于诊断通信问题
- */
-const TOF_DebugInfo_t *TOF_GetDebugInfo(void);
 
 #ifdef __cplusplus
 }

@@ -194,11 +194,6 @@ LF_Status_t LF_Test_Init(void);
 void LF_Process(void);
 
 /**
- * @brief  光流测试处理函数（自动打印接收到的数据）
- */
-void LF_Test_Process(void);
-
-/**
  * @brief  USART2中断服务函数（在USART2_IRQHandler中调用）
  * @note   必须在中断向量表中调用此函数
  */

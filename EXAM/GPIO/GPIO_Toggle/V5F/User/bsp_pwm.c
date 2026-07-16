@@ -1,5 +1,4 @@
 #include "bsp_pwm.h"
-#include "debug.h"
 
 /*
  * 当前底层真正使用的 PWM 链路：
@@ -19,9 +18,6 @@
  * 这样每个计数就是 1us，便于直接用“脉宽 us”来控制 CCR。
  */
 #define PWM_TIM_COUNTER_CLK_HZ        1000000UL
-
-/* 默认测试序列开始前等待 1000ms。 */
-#define PWM_TEST_SETTLE_DELAY_MS      1000U
 
 /* 保存 4 路当前脉宽缓存值。 */
 static uint16_t s_pwm_pulse_us[PWM_MOTOR_COUNT] = {
@@ -167,48 +163,6 @@ uint16_t PWM_GetPulseUs(uint8_t motor)
 uint8_t PWM_IsArmed(void)
 {
     return s_pwm_armed;
-}
-
-/*
- * 默认测试序列：
- * 1. 先锁定；
- * 2. 等待稳定；
- * 3. 解锁；
- * 4. 依次对 4 路做缓升、保持、回落；
- * 5. 最后重新锁定。
- */
-void PWM_TestSequence(void)
-{
-    uint8_t motor;
-
-    if(s_pwm_initialized == 0U)
-    {
-        return;
-    }
-
-    PWM_Lock();
-    Delay_Ms(PWM_TEST_SETTLE_DELAY_MS);
-
-    if(PWM_Arm() != PWM_OK)
-    {
-        printf("[PWM] arm failed\r\n");
-        PWM_EmergencyStop();
-        return;
-    }
-
-    printf("[PWM] armed, starting safe 4-channel test\r\n");
-
-    for(motor = PWM_MOTOR1; motor <= PWM_MOTOR4; motor++)
-    {
-        printf("[PWM] motor %u ramp to %u us\r\n", motor, PWM_TEST_PULSE_US);
-        PWM_RampTo(motor, PWM_TEST_PULSE_US, PWM_TEST_STEP_US, PWM_TEST_STEP_DELAY_MS);
-        Delay_Ms(1000);
-        PWM_RampTo(motor, PWM_MIN_PULSE_US, PWM_TEST_STEP_US, PWM_TEST_STEP_DELAY_MS);
-        Delay_Ms(500);
-    }
-
-    PWM_Lock();
-    printf("[PWM] test finished, locked\r\n");
 }
 
 /*

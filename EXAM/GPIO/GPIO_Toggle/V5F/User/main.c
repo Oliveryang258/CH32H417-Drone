@@ -24,6 +24,8 @@
 #include <math.h>
 
 #define BRINGUP_PRINT_PERIOD_MS   1000U
+#define IMU_ROLL_LEVEL_OFFSET_DEG    0.384f
+#define IMU_PITCH_LEVEL_OFFSET_DEG (-0.157f)
 #define XYKF_RATE_HZ                200U
 #define XYKF_DT                     (1.0f / (float)XYKF_RATE_HZ)
 #define XYKF_FLOW_MIN_QUALITY       150U
@@ -641,6 +643,14 @@ xykf_publish:
             g_shared_sensor.ekf_px_cm = s_of2_pos_x_cm;
             g_shared_sensor.ekf_py_cm = s_of2_pos_y_cm;
         } else {
+            float body_dx_cm;
+            float body_dy_cm;
+            float yaw_r;
+            float cy;
+            float sy;
+            float earth_dx_cm;
+            float earth_dy_cm;
+
             if (!s_of2_flying_prev) {
                 if (s_of2_cal_state == 1U) {
                     OF2_BiasCalFinish();
@@ -656,6 +666,20 @@ xykf_publish:
                 s_of2_stationary_offset_y_cm = 0.0f;
             }
 
+            /* Anonymous OF2/INTEG X/Y remain in the sensor/body frame.  Rotate
+             * each new displacement increment into a fixed earth frame before
+             * accumulating position, otherwise any yaw change cross-couples
+             * the position axes. */
+            body_dx_cm = (float)(g_shared_sensor.flow_integ_x_cm -
+                                 s_of2_last_raw_x_cm);
+            body_dy_cm = (float)(g_shared_sensor.flow_integ_y_cm -
+                                 s_of2_last_raw_y_cm);
+            yaw_r = g_shared_sensor.yaw * 0.017453293f;
+            cy = cosf(yaw_r);
+            sy = sinf(yaw_r);
+            earth_dx_cm = cy * body_dx_cm - sy * body_dy_cm;
+            earth_dy_cm = sy * body_dx_cm + cy * body_dy_cm;
+
             if (of2_valid &&
                 gyro_max_of2 < OF2_STATIONARY_GYRO_DPS &&
                 fabsf(vx_corr) < OF2_STATIONARY_VEL_CMPS &&
@@ -668,21 +692,16 @@ xykf_publish:
             }
 
             if (s_of2_stationary_ticks >= OF2_STATIONARY_TICKS) {
-                s_of2_stationary_offset_x_cm +=
-                    (float)(g_shared_sensor.flow_integ_x_cm - s_of2_last_raw_x_cm);
-                s_of2_stationary_offset_y_cm +=
-                    (float)(g_shared_sensor.flow_integ_y_cm - s_of2_last_raw_y_cm);
+                s_of2_stationary_offset_x_cm += earth_dx_cm;
+                s_of2_stationary_offset_y_cm += earth_dy_cm;
                 vx_corr = 0.0f;
                 vy_corr = 0.0f;
+            } else {
+                s_of2_pos_x_cm += earth_dx_cm;
+                s_of2_pos_y_cm += earth_dy_cm;
             }
             s_of2_last_raw_x_cm = g_shared_sensor.flow_integ_x_cm;
             s_of2_last_raw_y_cm = g_shared_sensor.flow_integ_y_cm;
-            s_of2_pos_x_cm =
-                (float)(g_shared_sensor.flow_integ_x_cm - s_of2_origin_x_cm) -
-                s_of2_stationary_offset_x_cm;
-            s_of2_pos_y_cm =
-                (float)(g_shared_sensor.flow_integ_y_cm - s_of2_origin_y_cm) -
-                s_of2_stationary_offset_y_cm;
             g_shared_sensor.ekf_px_cm = s_of2_pos_x_cm;
             g_shared_sensor.ekf_py_cm = s_of2_pos_y_cm;
             s_of2_cal_state = 3U;
@@ -711,108 +730,6 @@ xykf_publish:
     g_shared_sensor.ekf_bax_cmps2 = s_xkf.b;
     g_shared_sensor.ekf_bay_cmps2 = s_ykf.b;
     g_shared_sensor.ekf_update_tick++;
-}
-
-static void Bringup_Beep(uint16_t on_ms, uint16_t off_ms, uint8_t times)
-{
-    uint8_t i;
-    for (i = 0; i < times; i++)
-    {
-        BUZZ_Control(1);
-        LED_Control(1);
-        Delay_Ms(on_ms);
-        BUZZ_Control(0);
-        LED_Control(0);
-        Delay_Ms(off_ms);
-    }
-}
-
-static void Bringup_PrintIMU(void)
-{
-    const JY61P_Data_t *d = IMU_GetData();
-    const IMU_DebugInfo_t *dbg = IMU_GetDebugInfo();
-    /* 注意：newlib-nano 默认 printf 不支持 %f，所以直接打印 int16 raw 值。
-     * 想看物理量自己除一下：acc/2048≈g, gyro/16.4≈dps, ang/32.768≈deg */
-    printf("[IMU ] raw acc=%d,%d,%d  gyro=%d,%d,%d  ang=%d,%d,%d  "
-           "irq=%lu rx=%lu ok=%lu cks=%lu hdr=%lu typ=%lu "
-           "uerr=%lu ore=%lu ne=%lu fe=%lu pe=%lu\r\n",
-           d->accel_raw[0], d->accel_raw[1], d->accel_raw[2],
-           d->gyro_raw[0],  d->gyro_raw[1],  d->gyro_raw[2],
-           d->angle_raw[0], d->angle_raw[1], d->angle_raw[2],
-           (unsigned long)dbg->irq_count,
-           (unsigned long)dbg->rx_byte_count,
-           (unsigned long)dbg->frame_ok_count,
-           (unsigned long)dbg->checksum_error_count,
-           (unsigned long)dbg->header_drop_count,
-           (unsigned long)dbg->type_error_count,
-           (unsigned long)dbg->usart_error_count,
-           (unsigned long)dbg->ore_count,
-           (unsigned long)dbg->ne_count,
-           (unsigned long)dbg->fe_count,
-           (unsigned long)dbg->pe_count);
-}
-
-static void Bringup_PrintLF(void)
-{
-    const LF_Data_t *d = LF_GetData();
-    const LF_DebugInfo_t *dbg = LF_GetDebugInfo();
-    uint32_t range = d->range_distance_cm;
-    const char *range_str_invalid = "INVALID";
-    if (!d->range_valid || range == LF_RANGE_INVALID_CM)
-    {
-        printf("[LF  ] flow=%d,%d cm/s  q=%u  range=%s  "
-               "irq=%lu rx=%lu ok=%lu cks=%lu hdr=%lu typ=%lu len=%lu "
-               "uerr=%lu ore=%lu ne=%lu fe=%lu pe=%lu last=0x%02X\r\n",
-               d->flow_dx_cmps, d->flow_dy_cmps, d->flow_quality,
-               range_str_invalid,
-               (unsigned long)dbg->irq_count,
-               (unsigned long)dbg->rx_byte_count,
-               (unsigned long)dbg->frame_ok_count,
-               (unsigned long)dbg->checksum_error_count,
-               (unsigned long)dbg->header_drop_count,
-               (unsigned long)dbg->type_error_count,
-               (unsigned long)dbg->len_error_count,
-               (unsigned long)dbg->usart_error_count,
-               (unsigned long)dbg->ore_count,
-               (unsigned long)dbg->ne_count,
-               (unsigned long)dbg->fe_count,
-               (unsigned long)dbg->pe_count,
-               dbg->last_rx_byte);
-    }
-    else
-    {
-        printf("[LF  ] flow=%d,%d cm/s  q=%u  range=%lu cm  "
-               "irq=%lu rx=%lu ok=%lu cks=%lu hdr=%lu typ=%lu len=%lu "
-               "uerr=%lu ore=%lu ne=%lu fe=%lu pe=%lu last=0x%02X\r\n",
-               d->flow_dx_cmps, d->flow_dy_cmps, d->flow_quality,
-               (unsigned long)range,
-               (unsigned long)dbg->irq_count,
-               (unsigned long)dbg->rx_byte_count,
-               (unsigned long)dbg->frame_ok_count,
-               (unsigned long)dbg->checksum_error_count,
-               (unsigned long)dbg->header_drop_count,
-               (unsigned long)dbg->type_error_count,
-               (unsigned long)dbg->len_error_count,
-               (unsigned long)dbg->usart_error_count,
-               (unsigned long)dbg->ore_count,
-               (unsigned long)dbg->ne_count,
-               (unsigned long)dbg->fe_count,
-               (unsigned long)dbg->pe_count,
-               dbg->last_rx_byte);
-    }
-}
-
-static void Bringup_PrintNRF(void)
-{
-    /* 注意：这里不要再调 NRF_Check()！它会把 TX_ADDR 写成测试值且不还原。 */
-    uint8_t status = NRF_GetStatus();
-    printf("[NRF ] STATUS=0x%02X  rc_rx=%lu rc_err=%lu rc_lost=%lu seq=%u ready=%u\r\n",
-           status,
-           (unsigned long)s_rc_rx_count,
-           (unsigned long)s_rc_err_count,
-           (unsigned long)s_rc_lost_count,
-           s_link_seq,
-           s_link_ready);
 }
 
 /* 与遥控器 Init.c::CalculateChecksum 一致：对前 N-1 字节做 XOR */
@@ -986,7 +903,6 @@ static void Bringup_Run(void)
     uint32_t last_range_sample_count = 0UL;
 
     LED_BUZZ_Init();
-    //Bringup_Beep(80, 80, 2);
 
     /* 共享内存清零，防止V3F读到随机值/NaN */
     g_shared_sensor.roll        = 0.0f;
@@ -1090,12 +1006,77 @@ static void Bringup_Run(void)
     XYKF_Init();
     XYKF_TimerInit();
 
-    //Bringup_Beep(200, 0, 1);
     printf("==== Bringup loop start ====\r\n");
+
+    /*
+     * =========================================================================
+     * V5F 主循环 — 传感器采集 + 共享内存发布 + NRF 链路维护
+     * =========================================================================
+     * V5F 作为传感器协处理器，不直接控制电机。全部传感器数据写入
+     * 0x20140000 共享内存，V3F 以 150Hz 固定周期读取。
+     *
+     * 主循环职责（按执行顺序）：
+     *
+     * [1] update_tick 心跳
+     *     每个主循环迭代 +1，供 V3F 和 VOFA 判断数据新鲜度。
+     *
+     * [2] IMU 姿态/陀螺/加速度 → 共享内存
+     *     JY61P 通过 USART2 以 100Hz 推送。IMU_DataReady() 检测新帧，
+     *     读取后做 level-offset 校准（roll/pitch 减去静态安装偏置），
+     *     写入 g_shared_sensor.roll/pitch/yaw/gyro_dps[3]/accel_g[3]。
+     *
+     * [3] LF 调试计数器 → 共享内存 lf_dbg_*
+     *     每次循环都刷新，供 VOFA 遥测显示光流模块健康状态：
+     *     irq_count, rx_byte_count, frame_ok_count, checksum_error_count 等。
+     *
+     * [4] LF 光流帧处理（FLOW frame）
+     *     LF_DataReady() → LF_GetData() 读取光流速度帧：
+     *       flow_dx/dy_cmps    — 光流模块输出的水平速度 (cm/s)
+     *       flow_dx/dy_fix     — 去畸变速度
+     *       flow_integ_x/y_cm  — 位移积分 (cm)
+     *       flow_quality       — 图像质量 0~255（0=无效）
+     *       flow_dx/dy_raw     — 原始像素位移
+     *     V3F 用 OF0_Estimator_Update 对光流速度做互补滤波。
+     *
+     * [5] LF 测距帧处理（RANGE frame）
+     *     RANGE 帧独立于 FLOW 帧，有自己的序列号和时间戳。
+     *     三级有效性检查：
+     *       valid=0       → HEIGHT_TOF_STATE_SENTINEL（哨兵/无效标记）
+     *       range 超限    → HEIGHT_TOF_STATE_RANGE
+     *       axis 非下视    → HEIGHT_TOF_STATE_AXIS
+     *       全部通过       → HEIGHT_TOF_STATE_VALID，写入 tof_distance_mm
+     *     写入顺序：先清 tof_update_tick → 更新数据 → fence → 置 tof_update_tick。
+     *     V3F 检测 tof_update_tick 变化作为数据提交点，保证帧一致性。
+     *     同时维护 lf_range_distance_cm（OF0 水平估算用）。
+     *
+     * [6] NRF RC 链路轮询
+     *     Bringup_LinkPollRC() 检查 NRF RX FIFO，收到遥控器包后：
+     *       解析摇杆通道 ch[0..5]（T/A/E/R/AUX1/AUX2）
+     *       解析拨码开关 sw[0..1]（飞行模式 / 定高开关）
+     *       写入 g_shared_sensor.rc_ch[] / rc_sw[] / rc_flags
+     *       刷新 rc_link_ok 和最后收包时间戳
+     *
+     * [7] 50Hz ACK Payload 刷新
+     *     每 20ms 调用 Bringup_LinkRefreshAckPayload()：
+     *       将 V5F 最新传感器状态（IMU 姿态、光流、TOF 高度）打包
+     *       预填到 NRF ACK FIFO，PTX 下次发包时随 ACK 自动回传。
+     *       遥控器端用 ACK 数据做数传显示。
+     *
+     * [8] RC 链路超时看门狗
+     *     500ms 未收到 RC 包 → rc_link_ok=0，清除 rc_meg，
+     *     V3F 检测到 rc_link_ok=0 后触发失控保护（自动 disarm）。
+     *
+     * [9] MEG LED 控制
+     *     rc_link_ok && rc_meg 时驱动 MEG LED 指示链路状态。
+     *
+     * [10] 1ms 延时 + tick++
+     *     主循环约 1kHz 迭代，但实际速率受传感器帧率限制。
+     *     关键数据（IMU/光流）各自由独立帧到达驱动，不依赖循环速率。
+     * =========================================================================
+     */
     while(1)
     {
         tick_global = tick;
-        /* V5F 心跳：每个主循环迭代都+1（VOFA 调试用） */
         g_shared_sensor.update_tick++;
         g_shared_sensor.calib_time_ms = tick;
 
@@ -1105,8 +1086,14 @@ static void Bringup_Run(void)
             const JY61P_Data_t *imu = IMU_GetData();
             IMU_ClearDataReady();
 
-            g_shared_sensor.roll        = imu->angle_deg[0];
-            g_shared_sensor.pitch       = imu->angle_deg[1];
+            /* Fixed JY61P installation trim, averaged from three level,
+             * stationary power-cycle captures.  Publish corrected attitude so
+             * both the V3F attitude controller and V5F earth-frame transforms
+             * use the same body-level reference. */
+            g_shared_sensor.roll        =
+                imu->angle_deg[0] - IMU_ROLL_LEVEL_OFFSET_DEG;
+            g_shared_sensor.pitch       =
+                imu->angle_deg[1] - IMU_PITCH_LEVEL_OFFSET_DEG;
             g_shared_sensor.yaw         = imu->angle_deg[2];
             g_shared_sensor.gyro_dps[0] = imu->gyro_dps[0];
             g_shared_sensor.gyro_dps[1] = imu->gyro_dps[1];

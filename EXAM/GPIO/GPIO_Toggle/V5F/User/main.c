@@ -150,6 +150,7 @@ static uint32_t s_rc_lost_count = 0UL;    /* 链路超时次数 */
 static uint32_t s_last_rc_tick  = 0UL;    /* 上一次成功收到 RC 包的 tick */
 static uint8_t  s_link_ready    = 0U;     /* NRF 配置成功标志 */
 static uint32_t tick_global     = 0UL;    /* 主循环 tick 暴露给链路状态机 */
+volatile uint32_t g_tick        = 0UL;    /* SysTick ISR 递增，1ms 时基 */
 
 typedef struct
 {
@@ -826,7 +827,6 @@ static void Bringup_LinkPollRC(void)
 
 static void Bringup_Run(void)
 {
-    uint32_t tick = 0;
     uint32_t last_ack_refresh = 0;
     uint32_t last_range_sample_count = 0UL;
 
@@ -997,16 +997,16 @@ static void Bringup_Run(void)
      * [9] MEG LED 控制
      *     rc_link_ok && rc_meg 时驱动 MEG LED 指示链路状态。
      *
-     * [10] 1ms 延时 + tick++
-     *     主循环约 1kHz 迭代，但实际速率受传感器帧率限制。
+     * [10] SysTick 1ms 时基
+     *     g_tick 由 SysTick ISR 硬件递增，主循环自由轮询，不阻塞。
      *     关键数据（IMU/光流）各自由独立帧到达驱动，不依赖循环速率。
      * =========================================================================
      */
     while(1)
     {
-        tick_global = tick;
+        tick_global = g_tick;
         g_shared_sensor.update_tick++;
-        g_shared_sensor.calib_time_ms = tick;
+        g_shared_sensor.calib_time_ms = g_tick;
 
         /* IMU 有新帧时：清标志，同时刷新共享内存供 V3F 读取 */
         if (IMU_DataReady())
@@ -1123,15 +1123,15 @@ static void Bringup_Run(void)
         Bringup_LinkPollRC();
 
         /* 50Hz 刷新 ACK Payload：让飞机最新的传感器数据准备好下次回送 */
-        if ((tick - last_ack_refresh) >= 20U)
+        if ((g_tick - last_ack_refresh) >= 20U)
         {
-            last_ack_refresh = tick;
+            last_ack_refresh = g_tick;
             Bringup_LinkRefreshAckPayload();
         }
 
         /* 链路超时检查：500ms 没收到 RC 包则置 link_ok=0 */
         if (s_link_ready && g_shared_sensor.rc_link_ok &&
-            ((tick - s_last_rc_tick) >= RC_LINK_TIMEOUT_MS))
+            ((g_tick - s_last_rc_tick) >= RC_LINK_TIMEOUT_MS))
         {
             g_shared_sensor.rc_link_ok = 0U;
             g_shared_sensor.rc_meg = 0U;
@@ -1141,9 +1141,7 @@ static void Bringup_Run(void)
 
         MEG_Control((g_shared_sensor.rc_link_ok && g_shared_sensor.rc_meg) ? 1U : 0U);
 
-        /* 1Hz 周期打印（V5F printf 已禁，调用安全） */
-        Delay_Ms(1);
-        tick++;
+        /* g_tick 由 SysTick ISR 硬件递增，主循环自由轮询 */
     }
 }
 
@@ -1151,6 +1149,9 @@ int main(void)
 {
     SystemAndCoreClockUpdate();
     Delay_Init();
+
+    /* SysTick 1ms 时基：g_tick 在 ISR 中硬件递增，主循环自由轮询 */
+    SysTick_Config(SystemCoreClock / 1000UL);
 
     /* 复位源诊断：哪个复位标志置位了，说明上次是因何复位 */
     printf("[RST] PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u\r\n",

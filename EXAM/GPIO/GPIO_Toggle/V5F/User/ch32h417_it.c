@@ -14,10 +14,11 @@
 #include "bsp_imu.h"
 #include "bsp_lf.h"
 
-extern void XYKF_TickISR(void);
+extern volatile uint32_t g_tick;
 
 void NMI_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void HardFault_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART4_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -34,6 +35,18 @@ void NMI_Handler(void)
   while (1)
   {
   }
+}
+
+/*********************************************************************
+ * @fn      SysTick_Handler
+ *
+ * @brief   1ms 时基，递增 g_tick 供主循环所有超时判断使用。
+ *
+ * @return  none
+ */
+void SysTick_Handler(void)
+{
+    g_tick++;
 }
 
 /*********************************************************************

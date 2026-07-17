@@ -12,48 +12,48 @@
 *******************************************************************************/
 #include "ch32h417.h" 
 
-/* 
-* Uncomment the line corresponding to the desired System clock (SYSCLK) frequency (after 
-* reset the HSI is used as SYSCLK source).
-* If none of the define below is enabled, the HSI is used as System clock source. 
-*/
+/*
+ * 取消注释对应所需的系统时钟 (SYSCLK) 频率的行
+ * （复位后默认使用 HSI 作为 SYSCLK 源）。
+ * 若以下宏均未启用，则使用 HSI 作为系统时钟源。
+ */
 #define SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE    400000000
 // #define SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE    480000000
 // #define SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI    400000000
 // #define SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI    480000000
 
-/*Only suitable for commercial applications, with a temperature not exceeding 70 ℃ and good heat dissipation*/
+/*仅适用于商业应用，温度不超过 70 ℃ 且散热良好*/
 /* // #define SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE    480000000
 // #define SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI    480000000 */
 
-/* Clock Definitions */
+/* 时钟定义 */
 uint32_t HCLKClock;
 #ifdef SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE
-uint32_t SystemClock = SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE;         /* System Clock Frequency */
+uint32_t SystemClock = SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE;         /* 系统时钟频率 */
 uint32_t SystemCoreClock = 100000000;
 #elif defined SYSCLK_480_CoreCLK_V5F_240M_V3F_120M_HSE
-uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE;        /* System Clock Frequency */
+uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE;        /* 系统时钟频率 */
 uint32_t SystemCoreClock = 120000000;
 #elif defined SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI
-uint32_t SystemClock = SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI;        /* System Clock Frequency */
+uint32_t SystemClock = SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI;        /* 系统时钟频率 */
 uint32_t SystemCoreClock = 100000000;
 #elif defined SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI
-uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI;       /* System Clock Frequency */
+uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI;       /* 系统时钟频率 */
 uint32_t SystemCoreClock = 120000000;
 
 #elif defined SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE
-uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE;         /* System Clock Frequency */
+uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE;         /* 系统时钟频率 */
 uint32_t SystemCoreClock = 120000000;
 
 #elif defined SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI
-uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI;         /* System Clock Frequency */
+uint32_t SystemClock = SYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI;         /* 系统时钟频率 */
 uint32_t SystemCoreClock = 120000000;
 
 
 
 #else
 
-uint32_t SystemClock = HSI_VALUE;       /* System Clock Frequency */
+uint32_t SystemClock = HSI_VALUE;       /* 系统时钟频率 */
 uint32_t SystemCoreClock = HSI_VALUE;
 #endif
 
@@ -64,7 +64,7 @@ static __I uint8_t FPRETB[4] = {0, 1, 2, 2};
 
 
 
-/* system_private_function_proto_types */
+/* 系统私有函数原型 */
 static void SetSysClock(void);
 
 #ifdef SYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE
@@ -86,10 +86,10 @@ static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI( void );
 /*********************************************************************
  * @fn      SystemInit
  *
- * @brief   Setup the microcontroller system Initialize the Embedded Flash Interface,
- *        the PLL and update the SystemCoreClock variable.
+ * @brief   初始化微控制器系统：初始化嵌入式 Flash 接口、
+ *          配置 PLL 并更新 SystemCoreClock 变量。
  *
- * @return  none
+ * @return  无
  */
 void SystemInit (void)
 {
@@ -119,12 +119,12 @@ void SystemInit (void)
 /*********************************************************************
  * @fn      SetSysClock
  *
- * @brief   Sets System clock frequency.
- *          Sets V5F Core clock frequency.
- *          Sets V3F Core clock frequency.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率。
+ *          设置 V5F 核时钟频率。
+ *          设置 V3F 核时钟频率。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSysClock(void)
 {
@@ -145,17 +145,15 @@ static void SetSysClock(void)
 
 #endif
  
- /* If none of the define above is enabled, the HSI is used as System clock
-  * source (default after reset) 
-    */
+ /* 若以上宏均未启用，则使用 HSI 作为系统时钟源（复位后默认） */
 }
 
 /*********************************************************************
  * @fn      SystemAndCoreClockUpdate
  *
- * @brief   Update SystemClock and CoreClock variable according to Clock Register Values.
+ * @brief   根据时钟寄存器值更新 SystemClock 和 CoreClock 变量。
  *
- * @return  none
+ * @return  无
  */
 void SystemAndCoreClockUpdate (void)
 {
@@ -270,12 +268,12 @@ void SystemAndCoreClockUpdate (void)
 /*********************************************************************
  * @fn      SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE
  *
- * @brief   Sets System clock frequency to 400MHz.
- *          Sets V5F Core clock frequency to 400MHz.
- *          Sets V3F Core clock frequency to 100MHz.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率为 400MHz。
+ *          V5F 核时钟 400MHz。
+ *          V3F 核时钟 100MHz。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE(void)
 {
@@ -283,7 +281,7 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE(void)
    
   RCC->CTLR |= ((uint32_t)RCC_HSEON);
  
-  /* Wait till HSE is ready and if Time out is reached exit */
+  /* 等待 HSE 就绪，超时则退出 */
   do
   {
     HSEStatus = RCC->CTLR & RCC_HSERDY;
@@ -301,7 +299,7 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE(void)
 
   if (HSEStatus == (uint32_t)0x01)
   {
-    /* configure PLL Clock */  
+    /* 配置 PLL 时钟 */  
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_PLLMUL)); 
     RCC->PLLCFGR |= (uint32_t)RCC_PLLMUL16;   
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_PLL_SRC_DIV)); 
@@ -309,48 +307,48 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE(void)
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_PLLSRC)); 
     RCC->PLLCFGR |= (uint32_t)RCC_PLLSRC_HSE;
 
-    /* Wait till HSE clock is used as PLL clock source */
+    /* 等待 HSE 切换为 PLL 时钟源 */
     while ((RCC->PLLCFGR & (uint32_t)RCC_PLLSRC) != (uint32_t)RCC_PLLSRC_HSE)
     {
     }     
 
-    /* Enable PLL */
+    /* 使能 PLL */
     RCC->CTLR |= RCC_PLLON;
 
-    /* Wait till PLL is ready */
+    /* 等待 PLL 就绪 */
     while((RCC->CTLR & RCC_PLLRDY) != (uint32_t)RCC_PLLRDY)
     {
     }
 
-    /* Select PLL Clock as SYSPLL clock source */
+    /* 选择 PLL 时钟作为 SYSPLL 时钟源 */
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_GATE)); 
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_SEL)); 
 
-    /* Wait till PLL is used as system clock source */
+    /* 等待 PLL 切换为系统时钟源 */
     while ((RCC->PLLCFGR & (uint32_t)RCC_SYSPLL_SEL) != (uint32_t)0x00)
     {
     }
 
-    /* V5F core clock = SYSCLK */
+    /* V5F 核时钟 = SYSCLK */
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_HPRE));
     RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV1; 
 
-    /* V3F core clock = HCLK = SYSCLK/4 */
+    /* V3F 核时钟 = HCLK = SYSCLK/4 */
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_FPRE));
     RCC->CFGR0 |= (uint32_t)RCC_FPRE_DIV4;  
 
-    /* Select FLASH clock frequency*/
+    /* 选择 FLASH 时钟频率 */
     FLASH_Temp = FLASH->ACTLR;
     FLASH_Temp &= ~((uint32_t)0x3);
     FLASH_Temp |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
     FLASH->ACTLR = FLASH_Temp;
 
-    /* Select PLL as system clock source */
+    /* 选择 PLL 作为系统时钟源 */
     RCC->PLLCFGR |= (uint32_t)RCC_SYSPLL_GATE; 
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_SW));
     RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;    
 
-    /* Wait till PLL is used as system clock source */
+    /* 等待 PLL 切换为系统时钟源 */
     while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
     {
     }
@@ -358,9 +356,7 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE(void)
   }
   else
   { 
-        /* If HSE fails to start-up, the application will have wrong clock
-     * configuration. User can add here some code to deal with this error 
-         */
+        /* 若 HSE 启动失败，时钟配置将出错。用户可在此添加错误处理代码 */
   }  
 }
 
@@ -369,12 +365,12 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE(void)
 /*********************************************************************
  * @fn      SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE
  *
- * @brief   Sets System clock frequency to 480MHz.
- *          Sets V5F Core clock frequency to 240MHz.
- *          Sets V3F Core clock frequency to 120MHz.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率为 480MHz。
+ *          V5F 核时钟 240MHz。
+ *          V3F 核时钟 120MHz。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE(void)
 {
@@ -382,7 +378,7 @@ static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE(void)
 
   RCC->CTLR |= ((uint32_t)RCC_HSEON);
  
-  /* Wait till HSE is ready and if Time out is reached exit */
+  /* 等待 HSE 就绪，超时则退出 */
   do
   {
     HSEStatus = RCC->CTLR & RCC_HSERDY;
@@ -400,55 +396,55 @@ static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE(void)
 
   if (HSEStatus == (uint32_t)0x01)
   {
-    /* Select 25MHz as USBHS PLL clock reference */
+    /* 选择 25MHz 作为 USBHS PLL 时钟参考 */
     RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLL_REFSEL)); 
 
-    /* Select HSE as USBHS PLL clock source */
+    /* 选择 HSE 作为 USBHS PLL 时钟源 */
     RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLLSRC)); 
 
-    /* Wait till HSE is used as USBHS PLL clock source */
+    /* 等待 HSE 切换为 USBHS PLL 时钟源 */
     while ((RCC->PLLCFGR2 & (uint32_t)RCC_USBHSPLLSRC) != (uint32_t)0x00)
     {
     }
 
-    /* Enable USBHS PLL */
+    /* 使能 USBHS PLL */
     RCC->CTLR |= (uint32_t)RCC_USBHS_PLLON;
 
-    /* Wait till USBHS PLL is ready */
+    /* 等待 USBHS PLL 就绪 */
     while ((RCC->CTLR & (uint32_t)RCC_USBHS_PLLRDY) != (uint32_t)RCC_USBHS_PLLRDY)
     {
     }  
  
-    /* Select USBHS_PLL Clock as SYSPLL clock source */
+    /* 选择 USBHS_PLL 时钟作为 SYSPLL 时钟源 */
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_GATE)); 
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_SEL));
     RCC->PLLCFGR |= (uint32_t)((uint32_t)(RCC_SYSPLL_USBHS));
 
-    /* Wait till USBHS is used as system clock source */
+    /* 等待 USBHS 切换为系统时钟源 */
     while ((RCC->PLLCFGR & (uint32_t)RCC_SYSPLL_USBHS) != (uint32_t)RCC_SYSPLL_USBHS)
     {
     }
 
-    /* V5F core clock = SYSCLK */
+    /* V5F 核时钟 = SYSCLK */
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_HPRE));
     RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV2; 
 
-    /* V3F core clock = HCLK = SYSCLK/4 */
+    /* V3F 核时钟 = HCLK = SYSCLK/4 */
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_FPRE));
     RCC->CFGR0 |= (uint32_t)RCC_FPRE_DIV2;  
 
-    /* Select FLASH clock frequency*/
+    /* 选择 FLASH 时钟频率 */
     FLASH_Temp = FLASH->ACTLR;
     FLASH_Temp &= ~((uint32_t)0x3);
     FLASH_Temp |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
     FLASH->ACTLR = FLASH_Temp;
 
-    /* Select PLL as system clock source */
+    /* 选择 PLL 作为系统时钟源 */
     RCC->PLLCFGR |= (uint32_t)RCC_SYSPLL_GATE; 
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_SW));
     RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;    
 
-    /* Wait till PLL is used as system clock source */
+    /* 等待 PLL 切换为系统时钟源 */
     while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
     {
     }
@@ -456,9 +452,7 @@ static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE(void)
   }
   else
   { 
-        /* If HSE fails to start-up, the application will have wrong clock
-     * configuration. User can add here some code to deal with this error 
-         */
+        /* 若 HSE 启动失败，时钟配置将出错。用户可在此添加错误处理代码 */
   }   
 }
 
@@ -467,17 +461,17 @@ static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSE(void)
 /*********************************************************************
  * @fn      SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI
  *
- * @brief   Sets System clock frequency to 400MHz.
- *          Sets V5F Core clock frequency to 400MHz.
- *          Sets V3F Core clock frequency to 100MHz.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率为 400MHz。
+ *          V5F 核时钟 400MHz。
+ *          V3F 核时钟 100MHz。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI(void)
 {
   __IO uint32_t FLASH_Temp = 0;
-  /* configure PLL Clock */  
+  /* 配置 PLL 时钟 */  
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_PLLMUL)); 
   RCC->PLLCFGR |= (uint32_t)RCC_PLLMUL16;   
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_PLL_SRC_DIV)); 
@@ -485,48 +479,48 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI(void)
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_PLLSRC)); 
   RCC->PLLCFGR |= (uint32_t)RCC_PLLSRC_HSI;
 
-  /* Wait till HSI clock is used as PLL clock source */
+  /* 等待 HSI 切换为 PLL 时钟源 */
   while ((RCC->PLLCFGR & (uint32_t)RCC_PLLSRC) != (uint32_t)RCC_PLLSRC_HSI)
   {
   }     
 
-  /* Enable PLL */
+  /* 使能 PLL */
   RCC->CTLR |= RCC_PLLON;
 
-  /* Wait till PLL is ready */
+  /* 等待 PLL 就绪 */
   while((RCC->CTLR & RCC_PLLRDY) != (uint32_t)RCC_PLLRDY)
   {
   }
 
-  /* Select PLL Clock as SYSPLL clock source */
+  /* 选择 PLL 时钟作为 SYSPLL 时钟源 */
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_GATE)); 
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_SEL)); 
 
-  /* Wait till PLL is used as system clock source */
+  /* 等待 PLL 切换为系统时钟源 */
   while ((RCC->PLLCFGR & (uint32_t)RCC_SYSPLL_SEL) != (uint32_t)0x00)
   {
   }
 
-  /* V5F core clock = SYSCLK */
+  /* V5F 核时钟 = SYSCLK */
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_HPRE));
   RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV1; 
 
-  /* V3F core clock = HCLK = SYSCLK/4 */
+  /* V3F 核时钟 = HCLK = SYSCLK/4 */
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_FPRE));
   RCC->CFGR0 |= (uint32_t)RCC_FPRE_DIV4;  
 
-  /* Select FLASH clock frequency*/
+  /* 选择 FLASH 时钟频率 */
   FLASH_Temp = FLASH->ACTLR;
   FLASH_Temp &= ~((uint32_t)0x3);
   FLASH_Temp |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
   FLASH->ACTLR = FLASH_Temp;
 
-  /* Select PLL as system clock source */
+  /* 选择 PLL 作为系统时钟源 */
   RCC->PLLCFGR |= (uint32_t)RCC_SYSPLL_GATE; 
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_SW));
   RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;    
 
-  /* Wait till PLL is used as system clock source */
+  /* 等待 PLL 切换为系统时钟源 */
   while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
   {
   } 
@@ -537,66 +531,66 @@ static void SetSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI(void)
 /*********************************************************************
  * @fn      SYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI
  *
- * @brief   Sets System clock frequency to 480MHz.
- *          Sets V5F Core clock frequency to 240MHz.
- *          Sets V3F Core clock frequency to 120MHz.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率为 480MHz。
+ *          V5F 核时钟 240MHz。
+ *          V3F 核时钟 120MHz。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI(void)
 {
   __IO uint32_t FLASH_Temp = 0;
-  /* Select 25MHz as USBHS PLL clock reference */
+  /* 选择 25MHz 作为 USBHS PLL 时钟参考 */
   RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLL_REFSEL)); 
 
-  /* Select HSI as USBHS PLL clock source */
+  /* 选择 HSI 作为 USBHS PLL 时钟源 */
   RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLLSRC)); 
   RCC->PLLCFGR2 |= (uint32_t)RCC_USBHSPLLSRC_HSI;
 
-  /* Wait till HSI is used as USBHS PLL clock source */
+  /* 等待 HSI 切换为 USBHS PLL 时钟源 */
   while ((RCC->PLLCFGR2 & (uint32_t)RCC_USBHSPLLSRC) != (uint32_t)0x01)
   {
   }
 
-  /* Enable USBHS PLL */
+  /* 使能 USBHS PLL */
   RCC->CTLR |= (uint32_t)RCC_USBHS_PLLON;
 
-  /* Wait till USBHS PLL is ready */
+  /* 等待 USBHS PLL 就绪 */
   while ((RCC->CTLR & (uint32_t)RCC_USBHS_PLLRDY) != (uint32_t)RCC_USBHS_PLLRDY)
   {
   }  
 
-  /* Select USBSS_PLL Clock as SYSPLL clock source */
+  /* 选择 USBSS_PLL 时钟作为 SYSPLL 时钟源 */
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_GATE)); 
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_SEL));
   RCC->PLLCFGR |= (uint32_t)((uint32_t)(RCC_SYSPLL_USBHS));
 
-  /* Wait till USBHS is used as system clock source */
+  /* 等待 USBHS 切换为系统时钟源 */
   while ((RCC->PLLCFGR & (uint32_t)RCC_SYSPLL_USBHS) != (uint32_t)RCC_SYSPLL_USBHS)
   {
   }
 
-  /* V5F core clock = SYSCLK */
+  /* V5F 核时钟 = SYSCLK */
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_HPRE));
   RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV2;
 
-  /* V3F core clock = HCLK = SYSCLK/4 */
+  /* V3F 核时钟 = HCLK = SYSCLK/4 */
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_FPRE));
   RCC->CFGR0 |= (uint32_t)RCC_FPRE_DIV2;  
 
-  /* Select FLASH clock frequency*/
+  /* 选择 FLASH 时钟频率 */
   FLASH_Temp = FLASH->ACTLR;
   FLASH_Temp &= ~((uint32_t)0x3);
   FLASH_Temp |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
   FLASH->ACTLR = FLASH_Temp;
 
-  /* Select PLL as system clock source */
+  /* 选择 PLL 作为系统时钟源 */
   RCC->PLLCFGR |= (uint32_t)RCC_SYSPLL_GATE; 
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_SW));
   RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;    
 
-  /* Wait till PLL is used as system clock source */
+  /* 等待 PLL 切换为系统时钟源 */
   while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
   {
   } 
@@ -607,18 +601,18 @@ static void SetSYSCLK_480M_CoreCLK_V5F_240M_V3F_120M_HSI(void)
 /*********************************************************************
  * @fn      SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE
  *
- * @brief   Sets System clock frequency to 480MHz.
- *          Sets V5F Core clock frequency to 480MHz.
- *          Sets V3F Core clock frequency to 120MHz.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率为 480MHz。
+ *          V5F 核时钟 480MHz。
+ *          V3F 核时钟 120MHz。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE(void)
 {
   __IO uint32_t StartUpCounter = 0, HSEStatus = 0, FLASH_Temp = 0;
 
-  /* Select VDDK to 1.25V */
+  /* 选择 VDDK 为 1.25V */
   vu32 tmp = 0;
   tmp = *(vu32*)SYS_CFGR0_BASE;
   tmp &= ~(0x7 << 4);
@@ -627,7 +621,7 @@ static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE(void)
    
   RCC->CTLR |= ((uint32_t)RCC_HSEON);
  
-  /* Wait till HSE is ready and if Time out is reached exit */
+  /* 等待 HSE 就绪，超时则退出 */
   do
   {
     HSEStatus = RCC->CTLR & RCC_HSERDY;
@@ -645,55 +639,55 @@ static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE(void)
 
   if (HSEStatus == (uint32_t)0x01)
   {
-    /* Select 25MHz as USBHS PLL clock reference */
+    /* 选择 25MHz 作为 USBHS PLL 时钟参考 */
     RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLL_REFSEL)); 
 
-    /* Select HSE as USBHS PLL clock source */
+    /* 选择 HSE 作为 USBHS PLL 时钟源 */
     RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLLSRC)); 
 
-    /* Wait till HSE is used as USBHS PLL clock source */
+    /* 等待 HSE 切换为 USBHS PLL 时钟源 */
     while ((RCC->PLLCFGR2 & (uint32_t)RCC_USBHSPLLSRC) != (uint32_t)0x00)
     {
     }
 
-    /* Enable USBHS PLL */
+    /* 使能 USBHS PLL */
     RCC->CTLR |= (uint32_t)RCC_USBHS_PLLON;
 
-    /* Wait till USBHS PLL is ready */
+    /* 等待 USBHS PLL 就绪 */
     while ((RCC->CTLR & (uint32_t)RCC_USBHS_PLLRDY) != (uint32_t)RCC_USBHS_PLLRDY)
     {
     }  
  
-    /* Select USBHS_PLL Clock as SYSPLL clock source */
+    /* 选择 USBHS_PLL 时钟作为 SYSPLL 时钟源 */
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_GATE)); 
     RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_SEL));
     RCC->PLLCFGR |= (uint32_t)((uint32_t)(RCC_SYSPLL_USBHS));
 
-    /* Wait till USBHS is used as system clock source */
+    /* 等待 USBHS 切换为系统时钟源 */
     while ((RCC->PLLCFGR & (uint32_t)RCC_SYSPLL_USBHS) != (uint32_t)RCC_SYSPLL_USBHS)
     {
     }
 
-    /* V5F core clock = SYSCLK */
+    /* V5F 核时钟 = SYSCLK */
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_HPRE));
     RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV1; 
 
-    /* V3F core clock = HCLK = SYSCLK/4 */
+    /* V3F 核时钟 = HCLK = SYSCLK/4 */
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_FPRE));
     RCC->CFGR0 |= (uint32_t)RCC_FPRE_DIV4;  
 
-    /* Select FLASH clock frequency*/
+    /* 选择 FLASH 时钟频率 */
     FLASH_Temp = FLASH->ACTLR;
     FLASH_Temp &= ~((uint32_t)0x3);
     FLASH_Temp |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
     FLASH->ACTLR = FLASH_Temp;
 
-    /* Select PLL as system clock source */
+    /* 选择 PLL 作为系统时钟源 */
     RCC->PLLCFGR |= (uint32_t)RCC_SYSPLL_GATE; 
     RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_SW));
     RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;    
 
-    /* Wait till PLL is used as system clock source */
+    /* 等待 PLL 切换为系统时钟源 */
     while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
     {
     }
@@ -701,9 +695,7 @@ static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE(void)
   }
   else
   { 
-        /* If HSE fails to start-up, the application will have wrong clock
-     * configuration. User can add here some code to deal with this error 
-         */
+        /* 若 HSE 启动失败，时钟配置将出错。用户可在此添加错误处理代码 */
   }  
 }
 
@@ -712,73 +704,73 @@ static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSE(void)
 /*********************************************************************
  * @fn      SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI
  *
- * @brief   Sets System clock frequency to 480MHz.
- *          Sets V5F Core clock frequency to 480MHz.
- *          Sets V3F Core clock frequency to 120MHz.
- *          configure HCLK prescalers.
+ * @brief   设置系统时钟频率为 480MHz。
+ *          V5F 核时钟 480MHz。
+ *          V3F 核时钟 120MHz。
+ *          配置 HCLK 预分频器。
  *
- * @return  none
+ * @return  无
  */
 static void SetSYSCLK_480M_CoreCLK_V5F_480M_V3F_120M_HSI(void)
 {
   __IO uint32_t FLASH_Temp = 0;
-  /* Select VDDK to 1.25V */
+  /* 选择 VDDK 为 1.25V */
   vu32 tmp = 0;
   tmp = *(vu32*)SYS_CFGR0_BASE;
   tmp &= ~(0x7 << 4);
   tmp |= (0x5 << 4);
   *(vu32*)SYS_CFGR0_BASE = tmp;
 
-  /* Select 25MHz as USBHS PLL clock reference */
+  /* 选择 25MHz 作为 USBHS PLL 时钟参考 */
   RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLL_REFSEL)); 
 
-  /* Select HSI as USBHS PLL clock source */
+  /* 选择 HSI 作为 USBHS PLL 时钟源 */
   RCC->PLLCFGR2 &= (uint32_t)((uint32_t)~(RCC_USBHSPLLSRC)); 
   RCC->PLLCFGR2 |= (uint32_t)RCC_USBHSPLLSRC_HSI;
 
-  /* Wait till HSI is used as USBHS PLL clock source */
+  /* 等待 HSI 切换为 USBHS PLL 时钟源 */
   while ((RCC->PLLCFGR2 & (uint32_t)RCC_USBHSPLLSRC) != (uint32_t)0x01)
   {
   }
 
-  /* Enable USBHS PLL */
+  /* 使能 USBHS PLL */
   RCC->CTLR |= (uint32_t)RCC_USBHS_PLLON;
 
-  /* Wait till USBHS PLL is ready */
+  /* 等待 USBHS PLL 就绪 */
   while ((RCC->CTLR & (uint32_t)RCC_USBHS_PLLRDY) != (uint32_t)RCC_USBHS_PLLRDY)
   {
   }  
 
-  /* Select USBSS_PLL Clock as SYSPLL clock source */
+  /* 选择 USBSS_PLL 时钟作为 SYSPLL 时钟源 */
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_GATE)); 
   RCC->PLLCFGR &= (uint32_t)((uint32_t)~(RCC_SYSPLL_SEL));
   RCC->PLLCFGR |= (uint32_t)((uint32_t)(RCC_SYSPLL_USBHS));
 
-  /* Wait till USBHS is used as system clock source */
+  /* 等待 USBHS 切换为系统时钟源 */
   while ((RCC->PLLCFGR & (uint32_t)RCC_SYSPLL_USBHS) != (uint32_t)RCC_SYSPLL_USBHS)
   {
   }
 
-  /* V5F core clock = SYSCLK */
+  /* V5F 核时钟 = SYSCLK */
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_HPRE));
   RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV1;
 
-  /* V3F core clock = HCLK = SYSCLK/4 */
+  /* V3F 核时钟 = HCLK = SYSCLK/4 */
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_FPRE));
   RCC->CFGR0 |= (uint32_t)RCC_FPRE_DIV4;  
 
-  /* Select FLASH clock frequency*/
+  /* 选择 FLASH 时钟频率 */
   FLASH_Temp = FLASH->ACTLR;
   FLASH_Temp &= ~((uint32_t)0x3);
   FLASH_Temp |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
   FLASH->ACTLR = FLASH_Temp;
 
-  /* Select PLL as system clock source */
+  /* 选择 PLL 作为系统时钟源 */
   RCC->PLLCFGR |= (uint32_t)RCC_SYSPLL_GATE; 
   RCC->CFGR0 &= (uint32_t)((uint32_t)~(RCC_SW));
   RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;    
 
-  /* Wait till PLL is used as system clock source */
+  /* 等待 PLL 切换为系统时钟源 */
   while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
   {
   } 

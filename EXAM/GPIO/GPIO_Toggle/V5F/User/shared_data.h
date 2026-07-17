@@ -76,10 +76,10 @@ typedef struct
     uint8_t  _pad3_[3];            /* keep 4-byte tail alignment */
     float    ekf_vx_obs_cmps;      /* latest XY-KF earth X velocity observation */
     float    ekf_vy_obs_cmps;      /* latest XY-KF earth Y velocity observation */
-    uint8_t  flow_mode;             /* vendor mode: 0=OF0, 1=OF1, 2=OF2 */
+    uint8_t  flow_mode;             /* vendor mode: 2=OF2 */
     uint8_t  _pad4_[3];
     uint32_t flow_sample_count;     /* increments once per decoded flow frame */
-    uint8_t  flow_source_select;    /* V3F request: 0=OF0 fusion, 2=vendor OF2 */
+    uint8_t  flow_source_select;    /* V3F request: 2=vendor OF2 */
     uint8_t  flow_source_active;    /* V5F-confirmed active source */
     uint8_t  _pad5_[2];
     float    of2_bias_vx_cmps;      /* pre-arm OF2 integral-slope bias */

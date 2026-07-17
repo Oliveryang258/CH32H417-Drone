@@ -47,54 +47,54 @@ typedef struct
     uint8_t  rc_link_ok;    /* 1=link ok, 0=timeout */
     uint32_t rc_rx_count;   /* RC 包累计接收数（VOFA 调试用）*/
     uint32_t rc_lost_count; /* RC 链路超时累计次数 */
-    uint8_t  alarm_flags;   /* bit0=battery low, bit1=overcurrent */
-    uint16_t tof_distance_mm; /* Anonymous LF RANGE slant distance, mm */
-    uint8_t  tof_state;       /* 0=valid, 1=sentinel, 2=range, 3=axis */
-    uint8_t  tof_valid;       /* committed validity for the latest RANGE frame */
-    uint32_t tof_update_tick; /* V5F decode timestamp in ms + 1; commit marker */
-    int16_t  flow_dx_cmps;      /* optical-flow X velocity, cm/s */
-    int16_t  flow_dy_cmps;      /* optical-flow Y velocity, cm/s */
-    int16_t  flow_dx_fix_cmps;  /* fusion-corrected X velocity, cm/s */
-    int16_t  flow_dy_fix_cmps;  /* fusion-corrected Y velocity, cm/s */
-    int16_t  flow_integ_x_cm;   /* integrated X displacement, cm */
-    int16_t  flow_integ_y_cm;   /* integrated Y displacement, cm */
-    uint8_t  flow_quality;      /* 0..255, larger is better */
+    uint8_t  alarm_flags;   /* bit0=电池低压, bit1=过流 */
+    uint16_t tof_distance_mm; /* Anonymous LF RANGE 斜距 (mm) */
+    uint8_t  tof_state;       /* 0=有效, 1=哨兵, 2=超量程, 3=非下视 */
+    uint8_t  tof_valid;       /* 最新 RANGE 帧的有效性判定 */
+    uint32_t tof_update_tick; /* V5F 解码时间戳 ms+1，作为帧提交标记 */
+    int16_t  flow_dx_cmps;      /* 光流 X 轴速度 (cm/s) */
+    int16_t  flow_dy_cmps;      /* 光流 Y 轴速度 (cm/s) */
+    int16_t  flow_dx_fix_cmps;  /* 融合校正后 X 轴速度 (cm/s) */
+    int16_t  flow_dy_fix_cmps;  /* 融合校正后 Y 轴速度 (cm/s) */
+    int16_t  flow_integ_x_cm;   /* X 轴位移积分 (cm) */
+    int16_t  flow_integ_y_cm;   /* Y 轴位移积分 (cm) */
+    uint8_t  flow_quality;      /* 0~255，越大越好 */
     uint8_t  flow_state;
     uint8_t  flow_valid;
     uint8_t  flow_frame_id;
     uint32_t flow_update_tick;
 
-    /* === Calibration Data (V5F writes sensors, V3F writes test_flag) === */
-    float    accel_g[3];           /* JY61P accelerometer (g) */
-    uint32_t calib_time_ms;        /* calibration timestamp (ms) */
-    int8_t   flow_dx_raw;          /* LF raw pixel X (-128~127) */
-    int8_t   flow_dy_raw;          /* LF raw pixel Y (-128~127) */
-    uint8_t  calib_test_flag;      /* 0=idle 1=fwd 2=back 3=right 4=left */
-    uint8_t  _pad_;                /* keep 4-byte tail alignment */
-    uint16_t lf_range_distance_cm; /* LF onboard range, cm, 0xFFFF=invalid */
-    uint8_t  lf_range_valid;       /* 1=valid, 0=invalid */
-    uint8_t  _pad2_;               /* keep 4-byte tail alignment */
-    uint32_t lf_range_update_tick; /* changes only when a range frame arrives */
-    float    ekf_px_cm;            /* V5F XY-KF earth X position, cm */
-    float    ekf_py_cm;            /* V5F XY-KF earth Y position, cm */
-    float    ekf_vx_cmps;          /* V5F XY-KF earth X velocity, cm/s */
-    float    ekf_vy_cmps;          /* V5F XY-KF earth Y velocity, cm/s */
-    float    ekf_bax_cmps2;        /* leveled body-forward accel bias, cm/s^2 */
-    float    ekf_bay_cmps2;        /* leveled body-right accel bias, cm/s^2 */
-    uint32_t ekf_update_tick;      /* increments in V5F XY-KF timer ISR */
-    uint8_t  ekf_flags;            /* bit0=flow update used */
-    uint8_t  _pad3_[3];            /* keep 4-byte tail alignment */
-    float    ekf_vx_obs_cmps;      /* latest XY-KF earth X velocity observation */
-    float    ekf_vy_obs_cmps;      /* latest XY-KF earth Y velocity observation */
-    uint8_t  flow_mode;             /* vendor mode: 0=OF0, 1=OF1, 2=OF2 */
+    /* === 标定数据（V5F 写传感器，V3F 写 test_flag） === */
+    float    accel_g[3];           /* JY61P 加速度计 (g) */
+    uint32_t calib_time_ms;        /* 标定时间戳 (ms) */
+    int8_t   flow_dx_raw;          /* LF 原始像素 X (-128~127) */
+    int8_t   flow_dy_raw;          /* LF 原始像素 Y (-128~127) */
+    uint8_t  calib_test_flag;      /* 0=空闲 1=前 2=后 3=右 4=左 */
+    uint8_t  _pad_;                /* 保持 4 字节尾部对齐 */
+    uint16_t lf_range_distance_cm; /* LF 板载测距 (cm)，0xFFFF=无效 */
+    uint8_t  lf_range_valid;       /* 1=有效, 0=无效 */
+    uint8_t  _pad2_;               /* 保持 4 字节尾部对齐 */
+    uint32_t lf_range_update_tick; /* 仅在 RANGE 帧到达时更新 */
+    float    ekf_px_cm;            /* V5F XY-KF 大地系 X 位置 (cm) */
+    float    ekf_py_cm;            /* V5F XY-KF 大地系 Y 位置 (cm) */
+    float    ekf_vx_cmps;          /* V5F XY-KF 大地系 X 速度 (cm/s) */
+    float    ekf_vy_cmps;          /* V5F XY-KF 大地系 Y 速度 (cm/s) */
+    float    ekf_bax_cmps2;        /* 水平前向加速度偏置 (cm/s^2) */
+    float    ekf_bay_cmps2;        /* 水平右向加速度偏置 (cm/s^2) */
+    uint32_t ekf_update_tick;      /* V5F XY-KF 定时器 ISR 中递增 */
+    uint8_t  ekf_flags;            /* bit0=光流更新已使用 */
+    uint8_t  _pad3_[3];            /* 保持 4 字节尾部对齐 */
+    float    ekf_vx_obs_cmps;      /* 最新 XY-KF 大地系 X 速度观测 */
+    float    ekf_vy_obs_cmps;      /* 最新 XY-KF 大地系 Y 速度观测 */
+    uint8_t  flow_mode;             /* 厂商模式: 2=OF2 */
     uint8_t  _pad4_[3];
-    uint32_t flow_sample_count;     /* increments once per decoded flow frame */
-    uint8_t  flow_source_select;    /* V3F request: 0=OF0 fusion, 2=vendor OF2 */
-    uint8_t  flow_source_active;    /* V5F-confirmed active source */
+    uint32_t flow_sample_count;     /* 每解码一帧光流帧 +1 */
+    uint8_t  flow_source_select;    /* V3F 请求: 2=厂商 OF2 */
+    uint8_t  flow_source_active;    /* V5F 确认的活跃源 */
     uint8_t  _pad5_[2];
-    float    of2_bias_vx_cmps;      /* pre-arm OF2 integral-slope bias */
+    float    of2_bias_vx_cmps;      /* 解锁前 OF2 积分斜率偏置 */
     float    of2_bias_vy_cmps;
-    uint8_t  of2_pos_calib_state;   /* 0=waiting, 1=collecting, 2=ready, 3=flying */
+    uint8_t  of2_pos_calib_state;   /* 0=等待, 1=采集中, 2=就绪, 3=飞行中 */
     uint8_t  _pad_of2_[3];
     uint32_t lf_dbg_irq_count;
     uint32_t lf_dbg_rx_byte_count;

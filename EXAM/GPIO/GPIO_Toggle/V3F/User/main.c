@@ -21,7 +21,7 @@ volatile float g_kp_pitch = 0.70f;
 volatile float g_ki_pitch = 0.0f;
 volatile float g_kd_pitch = 0.002f;
 
-/* Rate-setpoint feedforward, in motor-output us per deg/s. */
+/* 角速度期望前馈，单位 us/(deg/s)，直接加到电机输出端补偿内环相位滞后 */
 volatile float g_roll_rate_ff  = 0.0f;
 volatile float g_pitch_rate_ff = 0.0f;
 
@@ -36,7 +36,7 @@ volatile float g_yaw_ff_limit = 20.0f;
 volatile float g_thr_override = 0.0f;
 volatile uint16_t g_thr_rc_max_us = 1490U;
 
-/* Quaternion attitude outer-loop P gains and rate limits. */
+/* 姿态外环 P 增益 + 角速度期望限幅 */
 volatile float g_kp_pitch_angle = 2.0f;
 volatile float g_pitch_angle_rate_limit = 60.0f;
 
@@ -70,28 +70,21 @@ volatile float g_flow_vel_limit_cmps = 60.0f;
 volatile uint8_t g_flow_reset_target = 0U;
 volatile uint8_t g_flow_stick_vel_enable = 0U;
 volatile float g_flow_stick_vel_limit_cmps = 10.0f;
-/* Temporary velocity-step test: sticks command OF2 X/Y velocity while fs0. */
+/* 临时速度阶跃测试：fs0 时摇杆直接控制 OF2 X/Y 速度 */
 
-/* Height hold is deliberately disabled after flashing.  Flight entry also
- * requires the RC switch to move Fly(2) -> Hover(1) while armed and the TOF
- * estimator to be ready. */
+/* 定高默认关闭（刷机后安全）。进入定高需同时满足：
+ * RC 拨码 Fly(2)→Hover(1) + 已 armed + TOF 高度估计就绪 */
 volatile uint8_t g_height_hold_enable = 0U;
 volatile float g_height_pos_kp = 0.30f;              /* (m/s) / m = 1/s */
 volatile float g_height_vel_kp = 15.0f;              /* us / (m/s) */
-volatile float g_height_vel_ki = 0.0f;               /* us / m; start P-only */
-volatile float g_hover_throttle_us = 1400.0f;        /* nominal/fallback; ACTIVE captures current hover */
-volatile float g_height_corr_limit_us = 15.0f;       /* tuned collective correction authority */
+volatile float g_height_vel_ki = 0.0f;               /* us / m；先纯 P 不加 I */
+volatile float g_hover_throttle_us = 1400.0f;        /* 标称/回退值；ACTIVE 模式会捕获当前悬停油门 */
+volatile float g_height_corr_limit_us = 15.0f;       /* 总距修正量上限，防止高度环剧烈干预 */
 volatile float g_height_vz_up_max_mps = 0.15f;
 volatile float g_height_vz_down_max_mps = 0.15f;
-volatile float g_height_stick_rate_mps = 0.10f;       /* max pilot climb/descent speed */
+volatile float g_height_stick_rate_mps = 0.10f;       /* 摇杆满行程对应的最大升降速度 */
 
-volatile float g_of0_kx = 1.0f;
-volatile float g_of0_ky = 1.0f;
-volatile float g_of0_alpha = 0.85f;
-volatile float g_of0_gyro_comp_x = 0.0f;
-volatile float g_of0_gyro_comp_y = 0.0f;
-
-volatile uint32_t g_sys_tick = 0;  /* Milliseconds accumulated by the 150 Hz TIM2 ISR. */
+volatile uint32_t g_sys_tick = 0;  /* TIM2 ISR @150Hz 累加的系统毫秒计数器 */
 
 volatile uint8_t  g_test_ramp_active = 0U;
 volatile uint32_t g_test_ramp_start_tick = 0U;
@@ -135,29 +128,6 @@ static float    flow_vel_err_right_cmps = 0.0f;
 static uint8_t  flow_target_valid = 0U;
 static uint8_t  flow_pos_enable_prev = 0U;
 static uint8_t  flow_ok_prev = 0U;
-
-static float    of0_vx_cmps = 0.0f;
-static float    of0_vy_cmps = 0.0f;
-static float    of0_raw_vx_cmps = 0.0f;
-static float    of0_raw_vy_cmps = 0.0f;
-static uint32_t of0_seen_update_tick = 0UL;
-
-static float OF0_GetHeightCm(void)
-{
-    if (g_shared_sensor.lf_range_valid &&
-        g_shared_sensor.lf_range_distance_cm >= 2U &&
-        g_shared_sensor.lf_range_distance_cm <= 400U) {
-        return (float)g_shared_sensor.lf_range_distance_cm;
-    }
-
-    if (g_shared_sensor.tof_valid &&
-        g_shared_sensor.tof_distance_mm >= 20U &&
-        g_shared_sensor.tof_distance_mm <= 4000U) {
-        return (float)g_shared_sensor.tof_distance_mm * 0.1f;
-    }
-
-    return 0.0f;
-}
 
 #define STICK_PITCH      (g_shared_sensor.rc_throttle)
 #define STICK_ROLL       (g_shared_sensor.rc_roll)
@@ -205,7 +175,7 @@ static float OF0_GetHeightCm(void)
  * 【光流控制 — fo/fs/fm/fr/fp/fl/fq/fx/fy/fv/fz/ft/fu】
  *   fo — 光流使能 (0/1)，启用速度环
  *   fs — 光流位置模式 (0/1)，位置环 + 速度环，优先级高于 ft
- *   fm — 光流源选择 (0=OF0 融合, 2=OF2 厂商)，切换时自动复位位置目标
+ *   fm — 光流源选择 (2=OF2 厂商)，切换时自动复位位置目标
  *   fr — 光流 roll  gain（cm/s → deg）
  *   fp — 光流 pitch gain（cm/s → deg）
  *   fl — 光流角度上限 (deg)，光流输出的最大倾角
@@ -216,13 +186,6 @@ static float OF0_GetHeightCm(void)
  *   fz — 光流位置目标复位 (0→1 触发)
  *   ft — 光流摇杆速度模式 (0/1)，stick → 速度指令，fs=0 时生效
  *   fu — 光流摇杆速度上限 (cm/s)
- *
- * 【OF0 互补滤波参数 — o(k/y/a/g/h)】
- *   ok — OF0 kx factor，像素→cm/s 的 X 轴换算系数
- *   oy — OF0 ky factor，像素→cm/s 的 Y 轴换算系数
- *   oa — OF0 alpha (0~1)，互补滤波系数，越大越信光流原始值
- *   og — OF0 gyro comp X，光流自旋补偿 X 系数
- *   oh — OF0 gyro comp Y，光流自旋补偿 Y 系数
  *
  * 【高度控制 — ze/zp/zv/zi/zh/zl/zu/zd/ha/hp】
  *   ze — 高度使能 (0/1)，仅未 armed 时可改，与 hp 互斥
@@ -416,23 +379,6 @@ static void CMD_Parse(const char *line)
         if (val >= 2.0f && val <= 30.0f) { g_flow_stick_vel_limit_cmps = val; }
     }
 
-    /* === OF0 互补滤波参数 === */
-    else if (!strncmp(line, "ok", 2)) {
-        if (val >= -10.0f && val <= 10.0f) { g_of0_kx = val; }
-    }
-    else if (!strncmp(line, "oy", 2)) {
-        if (val >= -10.0f && val <= 10.0f) { g_of0_ky = val; }
-    }
-    else if (!strncmp(line, "oa", 2)) {
-        if (val >= 0.0f && val <= 1.0f) { g_of0_alpha = val; }
-    }
-    else if (!strncmp(line, "og", 2)) {
-        if (val >= -10.0f && val <= 10.0f) { g_of0_gyro_comp_x = val; }
-    }
-    else if (!strncmp(line, "oh", 2)) {
-        if (val >= -10.0f && val <= 10.0f) { g_of0_gyro_comp_y = val; }
-    }
-
     /* === 系统 === */
     else if (!strncmp(line, "sl", 2)) {
         int16_t v = (int16_t)val;
@@ -496,8 +442,8 @@ static void CMD_Poll(void)
                                       *   桨叶惯性会反向打松螺母，必须对称缓降。
                                       *   1450→1000 大概 1.5s。紧急停机走 PWM_Lock() 不受此限。 */
 /* 单电机PWM 双向 slew 见文件顶部 g_motor_slew_us 全局变量声明 */
-#define SOFT_STOP_RC_THRESHOLD (-100) /* tr fixed-throttle bench mode: pull RC throttle below this to soft-stop. */
-#define SOFT_STOP_TIME_MS      2000U  /* Soft-stop ramp time; emergency disarm paths still lock immediately. */
+#define SOFT_STOP_RC_THRESHOLD (-100) /* tr 固定油门测试模式：摇杆低于此值触发缓停 */
+#define SOFT_STOP_TIME_MS      2000U  /* 缓停总时长 2s；紧急 disarm 走 PWM_Lock() 不受此限 */
 
 /*
  * 电机混控矩阵（X 型，从上往下视图）：
@@ -556,78 +502,6 @@ float stick_norm(int16_t stick)
 
     return clampf((float)stick / RC_STICK_MAX, -1.0f, 1.0f);
 }
-
-/*
- * OF0_Estimator_Update — OF0 光流速度互补滤波器
- * ============================================================================
- * 输入：
- *   g_shared_sensor.flow_d{x,y}_raw    — OF0 原始像素位移（归一化后为 cm/s）
- *   g_shared_sensor.accel_g[0/1/2]     — JY61P 加速度计 (g)
- *   g_shared_sensor.roll/pitch         — 当前姿态角 (deg)，用于机体→水平投影
- *   g_shared_sensor.gyro_dps[0/1]      — 角速度 (deg/s)，用于光流自旋补偿
- *   height_cm                           — 当前高度 (cm)，用于像素→cm/s 换算
- * 步骤：
- *   [1] 加速度机体→水平系投影：用 roll/pitch 把 accel 转到水平面
- *       acc_level_forward = cp*ax + sr*sp*ay + cr*sp*az
- *       acc_level_right   = cr*ay - sr*az
- *   [2] 预测：v_pred = 上一拍 v + acc * dt
- *       （IMU 积分预测速度，高频但会漂移）
- *   [3] 观测：有新光流帧时，将 raw 像素 * 高度 * k_factor 转为 cm/s
- *       raw = pixel * height * k - gyro * gyro_comp（扣除自旋引起的像素位移）
- *   [4] 互补融合：v = alpha * raw + (1-alpha) * pred
- *       alpha = g_of0_alpha（可调），α 越大越信光流，越小越信 IMU
- *   [5] 无光流帧时：纯用 IMU 预测 * 0.98（微衰减防漂移）
- *   [6] clip 到 ±200 cm/s
- * 输出：
- *   of0_vx_cmps / of0_vy_cmps — 互补滤波后的水平速度 (cm/s)，机体坐标系
- */
-static void OF0_Estimator_Update(float dt)
-{
-    float roll_r = g_shared_sensor.roll * 0.017453293f;
-    float pitch_r = g_shared_sensor.pitch * 0.017453293f;
-    float cr = cosf(roll_r);
-    float sr = sinf(roll_r);
-    float cp = cosf(pitch_r);
-    float sp = sinf(pitch_r);
-    float ax = g_shared_sensor.accel_g[0];
-    float ay = g_shared_sensor.accel_g[1];
-    float az = g_shared_sensor.accel_g[2];
-    float acc_x_cmps2;
-    float acc_y_cmps2;
-    float vx_pred;
-    float vy_pred;
-    float alpha = clampf(g_of0_alpha, 0.0f, 1.0f);
-    uint32_t flow_mark = g_shared_sensor.flow_update_tick;
-    float height_cm = OF0_GetHeightCm();
-    uint8_t flow_valid =
-        (g_shared_sensor.flow_valid &&
-         g_shared_sensor.flow_quality >= g_flow_min_quality &&
-         height_cm >= 5.0f && height_cm <= 150.0f) ? 1U : 0U;
-
-    acc_x_cmps2 = (cp * ax + sr * sp * ay + cr * sp * az) * 981.0f;
-    acc_y_cmps2 = (cr * ay - sr * az) * 981.0f;
-    vx_pred = of0_vx_cmps + acc_x_cmps2 * dt;
-    vy_pred = of0_vy_cmps + acc_y_cmps2 * dt;
-
-    if (flow_valid && flow_mark != of0_seen_update_tick) {
-        of0_seen_update_tick = flow_mark;
-        of0_raw_vx_cmps =
-            ((float)g_shared_sensor.flow_dx_raw * height_cm * g_of0_kx) -
-            (g_shared_sensor.gyro_dps[1] * g_of0_gyro_comp_x);
-        of0_raw_vy_cmps =
-            ((float)g_shared_sensor.flow_dy_raw * height_cm * g_of0_ky) -
-            (g_shared_sensor.gyro_dps[0] * g_of0_gyro_comp_y);
-        of0_vx_cmps = alpha * of0_raw_vx_cmps + (1.0f - alpha) * vx_pred;
-        of0_vy_cmps = alpha * of0_raw_vy_cmps + (1.0f - alpha) * vy_pred;
-    } else {
-        of0_vx_cmps = vx_pred * 0.98f;
-        of0_vy_cmps = vy_pred * 0.98f;
-    }
-
-    of0_vx_cmps = clampf(of0_vx_cmps, -200.0f, 200.0f);
-    of0_vy_cmps = clampf(of0_vy_cmps, -200.0f, 200.0f);
-}
-
 
 /*
  * RatePD_Update — 角速度 PD 控制器（roll/pitch 内环）
@@ -718,17 +592,16 @@ static void PID_Timer_Init(void)
  *   [2] 重载 PID 参数 — 支持 VOFA Commander 在线调参
  *   [3] Soft-stop 检测 — tr 固定油门模式下的油门低位缓停
  *   [4] 传感器读取 — 原始 gyro (deg/s) + 18Hz LPF 得到控制用 gyro
- *   [5] OF0 光流速度估计 — 互补滤波融合光流+IMU 加速度
- *   [6] 光流状态机 — 判断 flow_ok，选择速度源（位置环/摇杆/零）
- *   [7] 外环 @ 75Hz — 角度误差(deg) → 角速度期望(deg/s)，P 控制器
- *   [8] 内环 @ 150Hz — 角速度误差(deg/s) → 电机力矩修正(us)，PD 控制器
- *   [9] 油门目标优先级 — 缓升 > tr override > RC 摇杆 > 高度控制
- *  [10] 高度保护 — TOF 硬高度下限，自动减油门防撞地
- *  [11] 油门缓变 — 对称 ±2us/tick (300us/s) 防止桨叶松脱
- *  [12] 偏航前馈 — 油门越高反扭越大，按油门比例补偿 yaw
- *  [13] 电机混控 — X 型机架矩阵，油门 + 三轴修正 → 四路 PWM
- *  [14] 单电机测试 — tm1~tm4 直通，其他三路 PWM_MIN
- *  [15] Slew rate 限幅 — 双向限制每路 PWM 步进量
+ *   [5] 光流状态机 — 判断 flow_ok，选择速度源（位置环/摇杆/零）
+ *   [6] 外环 @ 75Hz — 角度误差(deg) → 角速度期望(deg/s)，P 控制器
+ *   [7] 内环 @ 150Hz — 角速度误差(deg/s) → 电机力矩修正(us)，PD 控制器
+ *   [8] 油门目标优先级 — 缓升 > tr override > RC 摇杆 > 高度控制
+ *   [9] 高度保护 — TOF 硬高度下限，自动减油门防撞地
+ *  [10] 油门缓变 — 对称 ±2us/tick (300us/s) 防止桨叶松脱
+ *  [11] 偏航前馈 — 油门越高反扭越大，按油门比例补偿 yaw
+ *  [12] 电机混控 — X 型机架矩阵，油门 + 三轴修正 → 四路 PWM
+ *  [13] 单电机测试 — tm1~tm4 直通，其他三路 PWM_MIN
+ *  [14] Slew rate 限幅 — 双向限制每路 PWM 步进量
  *  [16] PWM 输出 — 四路脉冲写入 TIMx CCR
  * ============================================================================
  */
@@ -882,9 +755,6 @@ void PID_Tick(void)
     gyro_roll_ctrl_dps  = gyro_roll_dps;
     gyro_pitch_ctrl_dps = gyro_pitch_dps;
 
-    /* [5] OF0 互补滤波：光流积分 + IMU 加速度预测 → 速度 (cm/s) */
-    OF0_Estimator_Update(PID_DT);
-
     /*
      * [6] 光流状态机 — 判断光流数据是否可用，选择速度指令源
      * =========================================================================
@@ -960,9 +830,8 @@ void PID_Tick(void)
                 g_flow_reset_target = 0U;
             }
         } else if (stick_vel_active) {
-            /* Bench-verified installed OF2 axes: X=forward, Y=right.
-             * A zero axis gain keeps that stick in manual attitude control so
-             * an isolated velocity-axis test does not disable the other axis. */
+            /* OF2 实测轴映射：X=前，Y=右。
+             * 某轴 gain=0 时该轴保持手控姿态，确保单轴速度测试不会禁用另一轴。 */
             flow_vel_target_x_cmps = (g_flow_pitch_gain != 0.0f) ?
                 stick_norm(STICK_PITCH) * g_flow_stick_vel_limit_cmps : 0.0f;
             flow_vel_target_y_cmps = (g_flow_roll_gain != 0.0f) ?
@@ -998,9 +867,8 @@ void PID_Tick(void)
                 float lim = g_flow_angle_limit_deg;
 
                 if (g_shared_sensor.flow_source_active == 2U) {
-                    /* OF2 velocity is body-frame X=forward, Y=right.  Position
-                     * targets are earth-frame, so rotate only the fs1 target
-                     * back into the current body frame before comparison. */
+                    /* OF2 速度是机体系（X=前,Y=右），位置目标是大地系。
+                     * fs1 位置环的目标速度需从大地系旋转回机体系再比较。 */
                     if (g_flow_pos_enable) {
                         float yaw_r = g_shared_sensor.yaw * 0.017453293f;
                         float cy = cosf(yaw_r);
@@ -1026,7 +894,7 @@ void PID_Tick(void)
                 }
                 flow_vel_err_forward_cmps = forward_err;
                 flow_vel_err_right_cmps = right_err;
-                /* Standard body geometry: right drives Roll, forward drives Pitch. */
+                /* 标准机体系映射：右摇杆驱动 Roll，前摇杆驱动 Pitch */
                 flow_roll_target_deg = clampf(g_flow_roll_gain * right_err, -lim, lim);
                 flow_pitch_target_deg = clampf(g_flow_pitch_gain * forward_err, -lim, lim);
             }
@@ -1068,8 +936,8 @@ void PID_Tick(void)
                 stick_norm(STICK_ROLL) * MANUAL_ATT_MAX_DEG;
             float manual_pitch_target_deg = stick_vel_pitch_active ? 0.0f :
                 stick_norm(STICK_PITCH) * MANUAL_ATT_MAX_DEG;
-            /* Keep manual attitude authority independent from a smaller optical-flow
-             * angle limit (for example fl4 during velocity-loop tuning). */
+            /* 保证手控角度限幅不低于光流角度限幅，防止调小 fl 参数时
+             * 连带把手控最大倾角也缩小了（例如速度环调参设 fl4 时手控仍能 6°） */
             float ctrl_att_limit_deg = (g_flow_angle_limit_deg > MANUAL_ATT_MAX_DEG) ?
                                        g_flow_angle_limit_deg : MANUAL_ATT_MAX_DEG;
             ctrl_roll_target_deg = clampf(manual_roll_target_deg + flow_roll_target_deg,
@@ -1553,11 +1421,6 @@ int main(void)
             snap.flow_vel_target_y_cmps = flow_vel_target_y_cmps;
             snap.flow_pos_target_x_cm  = flow_pos_target_x_cm;
             snap.flow_pos_target_y_cm  = flow_pos_target_y_cm;
-            snap.of0_vx_cmps           = of0_vx_cmps;
-            snap.of0_vy_cmps           = of0_vy_cmps;
-            snap.of0_raw_vx_cmps       = of0_raw_vx_cmps;
-            snap.of0_raw_vy_cmps       = of0_raw_vy_cmps;
-            snap.of0_height_cm         = OF0_GetHeightCm();
             snap.sensor_seen_local_ms  = sensor_seen_local_ms;
             snap.sensor_seen_update_tick = sensor_seen_update_tick;
             snap.flow_ok_debug         = flow_ok_debug;

@@ -29,14 +29,6 @@
 #define XYKF_RATE_HZ                200U
 #define XYKF_DT                     (1.0f / (float)XYKF_RATE_HZ)
 #define XYKF_FLOW_MIN_QUALITY       150U
-#define XYKF_OF0_RAW_SCALE          0.0823f
-/* OF0 was measured as raw X=lateral/Roll and raw Y=forward/Pitch. Keep that
- * installation mapping separate from the standard body forward/right axes. */
-#define XYKF_OF0_FORWARD_DX         0.0f
-#define XYKF_OF0_FORWARD_DY         1.0f
-#define XYKF_OF0_RIGHT_DX           1.0f
-#define XYKF_OF0_RIGHT_DY           0.0f
-#define XYKF_OF0_SAMPLE_DT          0.005f  /* Anonymous OF0 is configured for 200 Hz. */
 #define XYKF_RANGE_MIN_CM           5U
 #define XYKF_RANGE_MAX_CM           400U
 #define XYKF_FLOW_OBS_LIMIT_CMPS    200.0f
@@ -358,7 +350,6 @@ void XYKF_TickISR(void)
     float gyro_max = fabsf(g_shared_sensor.gyro_dps[0]);
     float accel_norm = sqrtf(ax * ax + ay * ay + az * az);
     uint8_t flags = 0U;
-    uint8_t flow_corrected = 0U;
     uint8_t imu_recent;
     uint8_t range_recent;
 
@@ -449,67 +440,6 @@ void XYKF_TickISR(void)
         XYKF_AxisPredict(&s_ykf, acc_earth_y);
     }
 
-    if ((s_xykf_calibrated != 0U) &&
-        (imu_recent != 0U) &&
-        (g_shared_sensor.flow_mode == LF_FLOW_MODE_RAW) &&
-        (g_shared_sensor.flow_valid != 0U) &&
-        (g_shared_sensor.flow_quality >= XYKF_FLOW_MIN_QUALITY) &&
-        (g_shared_sensor.flow_update_tick != s_xykf_seen_flow_tick)) {
-        float corr_gain = (g_shared_sensor.flow_quality >= 220U) ?
-                          XYKF_FLOW_CORR_GOOD : XYKF_FLOW_CORR_MID;
-        float flow_forward;
-        float flow_right;
-        float height_cm = 0.0f;
-        float flow_earth_x;
-        float flow_earth_y;
-
-        if (range_recent && g_shared_sensor.lf_range_valid &&
-            g_shared_sensor.lf_range_distance_cm >= XYKF_RANGE_MIN_CM &&
-            g_shared_sensor.lf_range_distance_cm <= XYKF_RANGE_MAX_CM) {
-            /* The range sensor measures along its tilted optical axis. */
-            height_cm = (float)g_shared_sensor.lf_range_distance_cm * cr * cp;
-        }
-
-        if (height_cm > 0.0f) {
-            float raw_dx = (float)g_shared_sensor.flow_dx_raw;
-            float raw_dy = (float)g_shared_sensor.flow_dy_raw;
-            flow_forward = (XYKF_OF0_FORWARD_DX * raw_dx + XYKF_OF0_FORWARD_DY * raw_dy) *
-                           height_cm * XYKF_OF0_RAW_SCALE;
-            flow_right = (XYKF_OF0_RIGHT_DX * raw_dx + XYKF_OF0_RIGHT_DY * raw_dy) *
-                         height_cm * XYKF_OF0_RAW_SCALE;
-            flow_forward = XYKF_Clamp(flow_forward, -XYKF_FLOW_OBS_LIMIT_CMPS, XYKF_FLOW_OBS_LIMIT_CMPS);
-            flow_right = XYKF_Clamp(flow_right, -XYKF_FLOW_OBS_LIMIT_CMPS, XYKF_FLOW_OBS_LIMIT_CMPS);
-            flow_earth_x = cy * flow_forward - sy * flow_right;
-            flow_earth_y = sy * flow_forward + cy * flow_right;
-            flags |= 0x02U;
-
-            XYKF_AxisCorrectVel(&s_xkf, flow_earth_x, corr_gain);
-            XYKF_AxisCorrectVel(&s_ykf, flow_earth_y, corr_gain);
-            obs_earth_x = flow_earth_x;
-            obs_earth_y = flow_earth_y;
-            s_xykf_last_obs_x = flow_earth_x;
-            s_xykf_last_obs_y = flow_earth_y;
-            s_xykf_flow_recent_ticks = XYKF_FLOW_RECENT_TICKS;
-            flags |= 0x01U;
-            flow_corrected = 1U;
-
-            if ((g_shared_sensor.flow_dx_raw >= -1) &&
-                (g_shared_sensor.flow_dx_raw <= 1) &&
-                (g_shared_sensor.flow_dy_raw >= -1) &&
-                (g_shared_sensor.flow_dy_raw <= 1) &&
-                (gyro_max <= XYKF_STILL_MAX_GYRO_DPS) &&
-                (fabsf(acc_earth_x) <= XYKF_STILL_MAX_ACCEL_CMPS2) &&
-                (fabsf(acc_earth_y) <= XYKF_STILL_MAX_ACCEL_CMPS2)) {
-                s_xkf.v *= XYKF_STILL_VEL_DECAY;
-                s_ykf.v *= XYKF_STILL_VEL_DECAY;
-                if (fabsf(s_xkf.v) < 0.5f) s_xkf.v = 0.0f;
-                if (fabsf(s_ykf.v) < 0.5f) s_ykf.v = 0.0f;
-                flags |= 0x08U;
-            }
-        }
-        s_xykf_seen_flow_tick = g_shared_sensor.flow_update_tick;
-    }
-
     if (s_xykf_calibrated != 0U) {
         if (range_recent && (g_shared_sensor.lf_range_valid != 0U) &&
             (g_shared_sensor.lf_range_distance_cm < XYKF_RANGE_MIN_CM)) {
@@ -522,8 +452,6 @@ void XYKF_TickISR(void)
             obs_earth_x = 0.0f;
             obs_earth_y = 0.0f;
             flags |= 0x18U;
-        } else if (flow_corrected != 0U) {
-            s_xykf_no_flow_ticks = 0U;
         } else {
             if (s_xykf_no_flow_ticks < XYKF_FLOW_STOP_TICKS) {
                 s_xykf_no_flow_ticks++;
@@ -1036,7 +964,7 @@ static void Bringup_Run(void)
      *       flow_integ_x/y_cm  — 位移积分 (cm)
      *       flow_quality       — 图像质量 0~255（0=无效）
      *       flow_dx/dy_raw     — 原始像素位移
-     *     V3F 用 OF0_Estimator_Update 对光流速度做互补滤波。
+     *     V3F 直接使用 V5F XY-KF/OF2 输出的速度。
      *
      * [5] LF 测距帧处理（RANGE frame）
      *     RANGE 帧独立于 FLOW 帧，有自己的序列号和时间戳。
@@ -1047,7 +975,7 @@ static void Bringup_Run(void)
      *       全部通过       → HEIGHT_TOF_STATE_VALID，写入 tof_distance_mm
      *     写入顺序：先清 tof_update_tick → 更新数据 → fence → 置 tof_update_tick。
      *     V3F 检测 tof_update_tick 变化作为数据提交点，保证帧一致性。
-     *     同时维护 lf_range_distance_cm（OF0 水平估算用）。
+     *     同时维护 lf_range_distance_cm（高度估计用）。
      *
      * [6] NRF RC 链路轮询
      *     Bringup_LinkPollRC() 检查 NRF RX FIFO，收到遥控器包后：
@@ -1180,8 +1108,7 @@ static void Bringup_Run(void)
                 __asm__ volatile("fence rw, rw" ::: "memory");
                 g_shared_sensor.tof_update_tick = source_mark;
 
-                /* Preserve the legacy range feed used by the horizontal OF0
-                 * estimator, while giving it the same per-frame marker. */
+                /* 写入 lf_range_distance_cm，供 V3F 高度估计使用。 */
                 if (range_ok != 0U && axis_ok != 0U) {
                     g_shared_sensor.lf_range_distance_cm = (uint16_t)range_sample.distance_cm;
                     g_shared_sensor.lf_range_valid = 1U;

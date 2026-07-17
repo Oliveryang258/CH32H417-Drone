@@ -17,10 +17,10 @@
 #endif 
 
 extern uint32_t HCLKClock;
-extern uint32_t SystemClock;               /* System Clock Frequency */
-extern uint32_t SystemCoreClock;           /* System Core Frequency */
+extern uint32_t SystemClock;               /* 系统时钟频率 */
+extern uint32_t SystemCoreClock;           /* 系统内核时钟频率 */
 
-/* System_Exported_Functions */  
+/* 系统导出函数 */  
 extern void SystemInit(void);
 extern void SystemAndCoreClockUpdate(void);
 

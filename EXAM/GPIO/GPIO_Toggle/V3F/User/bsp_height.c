@@ -6,7 +6,7 @@
 #include <math.h>
 
 /* ================================================================
- *  Height guard state (extern'd, accessed by main.c height-guard block)
+ *  高度保护状态（extern 导出，由 main.c 高度保护块访问）
  * ================================================================ */
 volatile uint8_t g_height_guard_enable = 0U;
 float    height_guard_cap_us = 0.0f;
@@ -15,7 +15,7 @@ uint32_t height_guard_seen_tof_tick = 0UL;
 uint32_t height_guard_seen_local_ms = 0UL;
 
 /* ================================================================
- *  Height buzzer state
+ *  高度蜂鸣器状态
  * ================================================================ */
 static volatile uint8_t s_height_buzz_event = HEIGHT_BUZZ_NONE;
 static volatile uint8_t s_height_buzz_seq = 0U;
@@ -89,7 +89,7 @@ uint8_t V307_AlarmPoll(uint32_t now_ms)
                 if      (b == V307_TAG_IMG_HEAD)  { s_state = LP_IMG_X; }
                 else if (b == V307_TAG_BATT_LOW)  { s_last_batt_ms = now_ms; s_seen_batt = 1U; }
                 else if (b == V307_TAG_OVERCURRENT) { s_last_overcurrent_ms = now_ms; s_seen_overcurrent = 1U; }
-                /* other tags (0xAA/0xAB/0x00) ignored */
+                /* 其他标签 (0xAA/0xAB/0x00) 忽略 */
                 break;
             case LP_IMG_X:    s_state = LP_IMG_Y;    break;
             case LP_IMG_Y:    s_state = LP_IMG_TAIL; break;
@@ -154,7 +154,7 @@ int16_t s_manual_takeover_stick = 0;
 float s_manual_takeover_collective_us = (float)PWM_MIN_PULSE_US;
 
 /* ================================================================
- *  Manual takeover helpers (static, internal to height module)
+ *  手动接管辅助函数（static，高度模块内部使用）
  * ================================================================ */
 static void ManualTakeover_Reset(void)
 {
@@ -166,9 +166,8 @@ static void ManualTakeover_Reset(void)
 
 static void ManualTakeover_Capture(void)
 {
-    /* Reserve physical travel in both directions.  If the pilot exits near
-     * an endpoint, the first sample remains continuous and subsequent manual
-     * ticks ramp toward the requested endpoint through the existing slew. */
+    /* 为双向操作预留物理行程。即使飞行员在端点附近退出定高，
+     * 第一次采样仍然连续，后续手动刻度通过现有的 slew 缓慢爬向目标端点。 */
     s_manual_takeover_stick = (int16_t)clampf((float)STICK_THROTTLE,
                                               (float)MANUAL_TAKEOVER_CENTER_MIN,
                                               (float)MANUAL_TAKEOVER_CENTER_MAX);
@@ -285,9 +284,8 @@ void HeightEstimator_Update(uint32_t now_ms)
     if (Height_ReadTofSnapshot(&source_mark, &distance_mm,
                                &source_state, &source_valid) &&
         source_mark != s_height_est.seen_source_mark) {
-        /* tof_update_tick is packed and therefore not naturally aligned in
-         * the fixed shared ABI.  Require the entire snapshot to be identical
-         * on two consecutive 150 Hz ticks before consuming it. */
+        /* tof_update_tick 紧挨打包字段，在固定共享 ABI 中并非自然对齐。
+         * 要求连续两个 150Hz tick 读取到完全一致的快照才确认消费。 */
         if (s_height_est.candidate_ready != 0U &&
             source_mark == s_height_est.candidate_source_mark &&
             distance_mm == s_height_est.candidate_raw_mm &&
@@ -428,8 +426,8 @@ void HeightEstimator_Update(uint32_t now_ms)
  *  Height control
  * ================================================================ */
 
-/* The mode edge is intentionally independent of throttle.  A switch held high
- * through arming must be released and asserted again before entry is possible. */
+/* 模式触发沿刻意与油门解耦。解锁期间一直保持高位的开关需要先释放再重新置位，
+ * 才能触发定高进入，防止解锁后意外触发。 */
 uint8_t Height_SwitchRequest(void)
 {
     return (g_height_hold_enable != 0U &&
@@ -492,14 +490,13 @@ void HeightControl_StartManualTakeover(uint32_t now_ms)
 {
     ManualTakeover_Capture();
     HeightControl_StartDegraded(now_ms, 0U);
-    /* The remapped manual target equals thr_base at this instant, so no blend
-     * delay is required and pilot authority is available immediately. */
+    /* 重映射后手动目标在此瞬间等于 thr_base，因此无需 blend 延迟，
+     * 飞行员可立即获得操控权限。 */
     s_height_transition_start_ms = now_ms - HEIGHT_FALLBACK_BLEND_MS;
 }
 
-/* Manual throttle is intentionally ignored while height hold is active.  A
- * sensor dropout therefore holds the last applied collective instead of
- * silently handing control to an arbitrary, previously ignored stick value. */
+/* 定高激活期间刻意忽略手控油门。传感器短暂丢失时不悄无声息地切回未知的
+ * 手控值，而是保持最后的总距输出，直到正常退回或超时。 */
 void HeightControl_StartSensorHold(uint32_t now_ms)
 {
     s_height_mode = HEIGHT_MODE_SENSOR_HOLD;
@@ -606,16 +603,15 @@ void HeightControl_PositionLoop(void)
     float desired_vz_mps;
 
     if (fabsf(pilot_vz_mps) > 0.001f) {
-        /* While the pilot commands vertical motion, do not accumulate a
-         * distant height target.  The current height becomes the future
-         * hold point when the stick is released. */
+        /* 飞行员操作垂直运动时不累积远处的高度目标。
+         * 当前高度即为松开摇杆后要锁定的悬停点。 */
         s_height_target_m = s_height_est.height_filt_m;
         s_height_entry_vz_capture_active = 0U;
         s_height_stick_active_prev = 1U;
         desired_vz_mps = pilot_vz_mps;
     } else if (s_height_entry_vz_capture_active != 0U) {
-        /* Bumpless entry: start at measured vertical speed, then brake the
-         * command toward zero instead of demanding an instantaneous stop. */
+        /* 无扰进入：从实测垂直速度出发，逐步刹车减速到零，
+         * 而非瞬间要求零速度，避免油门阶跃。 */
         s_height_target_m = s_height_est.height_filt_m;
         desired_vz_mps = 0.0f;
         if (fabsf(s_height_target_vz_mps) <=
@@ -696,8 +692,7 @@ uint8_t HeightControl_EntryReady(void)
     float min_safe_height_m = HEIGHT_ENTRY_MIN_M;
 
     if (s_height_est.vz_filt_mps < 0.0f) {
-        /* Require enough measured ground clearance to slew a downward entry
-         * velocity to zero at the configured command acceleration. */
+        /* 需要足够的地面余量以便在配置的指令加速度下将下降速度刹车归零 */
         float down_vz_mps = -s_height_est.vz_filt_mps;
         min_safe_height_m += (down_vz_mps * down_vz_mps) /
                              (2.0f * HEIGHT_VZ_CMD_ACCEL_MPS2);
@@ -718,9 +713,8 @@ void HeightControl_EnterActive(uint32_t now_ms)
 {
     s_height_mode = HEIGHT_MODE_ACTIVE;
     ManualTakeover_Reset();
-    /* Capture both the applied collective and the current RC throttle as the
-     * neutral point.  Different batteries and different manual hover sticks
-     * therefore do not create a step at takeover. */
+    /* 同时捕获当前总距和 RC 油门作为中立点。
+     * 不同电池、不同手控悬停油门不会在接管瞬间产生油门阶跃。 */
     s_height_hover_base_us = thr_base;
     s_height_stick_center = (int16_t)clampf((float)STICK_THROTTLE,
                                            -RC_STICK_MAX, RC_STICK_MAX);
@@ -734,7 +728,7 @@ void HeightControl_EnterActive(uint32_t now_ms)
     s_height_correction_us = 0.0f;
     s_height_sat_high = 0U;
     s_height_sat_low = 0U;
-    s_height_cycle = 5U; /* next tick runs 25Hz position before 50Hz PI */
+    s_height_cycle = 5U; /* 下一 tick 先跑 25Hz 位置环再跑 50Hz PI 速度环 */
     s_height_transition_start_ms = now_ms;
     s_height_transition_from_us = thr_base;
     s_height_entry_rejected = 0U;
@@ -815,8 +809,8 @@ uint8_t HeightControl_Update(float manual_target_us,
 
     if (s_height_mode == HEIGHT_MODE_OFF && rising != 0U &&
         s_height_reentry_block == 0U) {
-        /* Keep manual throttle authority while waiting.  The takeover may
-         * occur only inside this short, explicit switch-request window. */
+        /* 等待期间保持手控油门权限。接管只会在这个短时、显式的开关请求
+         * 窗口内触发，不会悄无声息地切换。 */
         s_height_entry_pending = 1U;
         s_height_entry_wait_start_ms = now_ms;
         s_height_entry_rejected = 0U;
@@ -829,8 +823,7 @@ uint8_t HeightControl_Update(float manual_target_us,
             HeightControl_EnterActive(now_ms);
         } else if ((now_ms - s_height_entry_wait_start_ms) >=
                    HEIGHT_ENTRY_WAIT_MS) {
-            /* A timed-out request cannot take over later without a deliberate
-             * Fly -> Hover switch cycle. */
+            /* 超时的请求不会在之后自动接管，需要显式 Fly→Hover 开关循环 */
             s_height_entry_pending = 0U;
             s_height_reentry_block = 1U;
             s_height_entry_rejected = 1U;
@@ -838,9 +831,8 @@ uint8_t HeightControl_Update(float manual_target_us,
         }
     }
 
-    /* Capture can be activated above during the same ISR tick.  Re-evaluate
-     * the manual target before the degraded handover so its first sample is
-     * exactly the currently applied collective. */
+    /* 上面可能在同一次 ISR tick 内激活定高。在降级交接前重新评估手动目标，
+     * 确保降级后的第一个采样值恰好等于当前实际输出的总距。 */
     manual_target_us = ManualTakeover_Target(STICK_THROTTLE, manual_target_us);
 
     if (s_height_mode == HEIGHT_MODE_ACTIVE) {
@@ -913,7 +905,7 @@ void HeightControl_ApplyHeadroom(float out_roll_mix,
         return;
     }
 
-    /* Preserve the existing mixer signs; only calculate its collective room. */
+    /* 保持现有混控矩阵符号不变，仅计算总距可用的上下空间 */
     mix_term[0] =  out_roll_mix - out_pitch_mix - out_yaw_mix;
     mix_term[1] = -out_roll_mix - out_pitch_mix + out_yaw_mix;
     mix_term[2] = -out_roll_mix + out_pitch_mix - out_yaw_mix;

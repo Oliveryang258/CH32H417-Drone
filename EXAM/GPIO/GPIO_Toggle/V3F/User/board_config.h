@@ -3,14 +3,14 @@
 
 #include "ch32h417_conf.h"
 
-// MOTOR TIM4 
+// 电机 PWM TIM4
 #define MOTOR_PORT             GPIOD
 #define MOTOR1_PIN             GPIO_Pin_12 // TIM4_CH1
 #define MOTOR2_PIN             GPIO_Pin_13 // TIM4_CH2
 #define MOTOR3_PIN             GPIO_Pin_14 // TIM4_CH3
 #define MOTOR4_PIN             GPIO_Pin_15 // TIM4_CH4
 
-// MEG PD4
+// 机械爪 PD4
 #define MEG_PORT               GPIOA
 #define MEG_PIN                GPIO_Pin_5
 
@@ -36,19 +36,19 @@
 #define VOFA_RX_PINSOURCE       GPIO_PinSource14
 #define VOFA_GPIO_AF            GPIO_AF4
 
-// NRF SPI PC10=SCK, PC11=MISO, PC12=MOSI
+// NRF24L01 SPI: PC10=SCK, PC11=MISO, PC12=MOSI
 #define NRF_SPI_PORT           GPIOC
 #define NRF_CLK_PIN            GPIO_Pin_10
 #define NRF_MISO_PIN           GPIO_Pin_11
 #define NRF_MOSI_PIN           GPIO_Pin_12
 
-// NRF PD0, PD1, PD2
+// NRF24L01 控制引脚: PD0=CSN, PD1=CE, PD2=IRQ
 #define NRF_CTRL_PORT          GPIOD
 #define NRF_CSN_PIN            GPIO_Pin_0
 #define NRF_CE_PIN             GPIO_Pin_1
 #define NRF_IRQ_PIN            GPIO_Pin_2  
 
-//ADC PC0, PC1
+// 电池电压/电流 ADC: PC0=电压, PC1=电流
 #define POWER_ADC_PORT         GPIOC
 #define ADC_VOL_PIN            GPIO_Pin_0  
 #define ADC_CUR_PIN            GPIO_Pin_1  

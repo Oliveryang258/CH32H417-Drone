@@ -45,8 +45,8 @@ static uint8_t  s_tx_buf[VOFA_TX_BUF_SIZE];
 static volatile uint16_t s_tx_head = 0U;
 static volatile uint16_t s_tx_tail = 0U;
 
-/* TX ring buffer free space.
- * One byte is kept empty to distinguish "full" from "empty". */
+/* TX 环形缓冲区空闲字节数。
+ * 预留 1 字节空位以区分"满"和"空"。 */
 static uint16_t VOFA_TxFree(void)
 {
     uint16_t head = s_tx_head;
@@ -60,14 +60,13 @@ static uint16_t VOFA_TxFree(void)
 
 static void VOFA_TxKick(void)
 {
-    /* Enabling TXE lets USART3_IRQHandler feed bytes whenever the TX data
-     * register becomes empty. The main loop does not wait for UART timing. */
+    /* 使能 TXE 中断后，USART3_IRQHandler 会在 TX 数据寄存器变空时自动喂下一个字节。
+     * 主循环不等待 UART 时序，全部由中断驱动发送。 */
     USART_ITConfig(USART3, USART_IT_TXE, ENABLE);
 }
 
-/* Queue a whole VOFA frame for interrupt-driven transmission.
- * If Bluetooth is slower than telemetry generation, drop this frame instead
- * of blocking the flight-control loop. */
+/* 将整帧 VOFA 数据入队，由中断驱动发送。
+ * 若蓝牙速率跟不上遥测生成速率，直接丢弃本帧，不阻塞飞控循环。 */
 static uint8_t VOFA_QueueBytes(const uint8_t *data, uint16_t len)
 {
     uint16_t i;
@@ -174,8 +173,8 @@ void USART3_IRQHandler(void)
 
     if(USART_GetITStatus(USART3, USART_IT_TXE) != RESET)
     {
-        /* TXE interrupt drains one queued byte per interrupt. Disable TXE when
-         * the queue becomes empty, otherwise USART3 would interrupt forever. */
+        /* TXE 中断每次从队列取一个字节发出。队列空时关 TXE 中断，
+         * 否则 USART3 会不停触发中断浪费 CPU。 */
         if(s_tx_tail != s_tx_head) {
             USART_SendData(USART3, s_tx_buf[s_tx_tail]);
             s_tx_tail = (uint16_t)((s_tx_tail + 1U) % VOFA_TX_BUF_SIZE);
@@ -221,17 +220,7 @@ void VOFA_Telemetry_Send(const VOFA_Snapshot_t *snap)
         vofa[7] = (float)snap->sensor_seen_update_tick;
         BSP_VOFA_Send(vofa, 8U);
     } else if (g_vofa_view == VOFA_VIEW_FLOW) {
-        if (g_vofa_axis == 0U) {
-            /* vd2 vx0: OF0 互补滤波速度 + 原始光流 + 高度 */
-            vofa[0] = snap->of0_vx_cmps;
-            vofa[1] = snap->of0_vy_cmps;
-            vofa[2] = snap->of0_raw_vx_cmps;
-            vofa[3] = snap->of0_raw_vy_cmps;
-            vofa[4] = (float)g_shared_sensor.flow_dx_fix_cmps;
-            vofa[5] = (float)g_shared_sensor.flow_dy_fix_cmps;
-            vofa[6] = (float)g_shared_sensor.flow_quality;
-            vofa[7] = snap->of0_height_cm;
-        } else if (g_vofa_axis == 1U) {
+        if (g_vofa_axis == 1U) {
             /* vd2 vx1: X 轴 / Pitch — OF2 速度 + 质量 */
             vofa[0] = (float)g_shared_sensor.flow_mode;
             vofa[1] = (float)g_shared_sensor.flow_state;
@@ -265,7 +254,7 @@ void VOFA_Telemetry_Send(const VOFA_Snapshot_t *snap)
         BSP_VOFA_Send(vofa, 8U);
     } else if (g_vofa_view == VOFA_VIEW_CALIB) {
         switch (g_vofa_axis) {
-        case 3U: /* vx3: Phase 4 — 延迟测试 (OF0 + 加速度导航 + 高度 + 质量) */
+        case 3U: /* vx3: 阶段4 — 延迟测试 (加速度导航 + 高度 + 质量) */
             {
                 float roll_r  = g_shared_sensor.roll  * 0.017453293f;
                 float pitch_r = g_shared_sensor.pitch * 0.017453293f;
@@ -284,7 +273,7 @@ void VOFA_Telemetry_Send(const VOFA_Snapshot_t *snap)
                 vofa[7] = (float)g_shared_sensor.calib_test_flag;
             }
             break;
-        case 2U: /* vx2: Phase 3 — 旋转补偿 (OF0 + 陀螺 + 高度) */
+        case 2U: /* vx2: 阶段3 — 旋转补偿 (陀螺 + 高度) */
             vofa[0] = (float)g_shared_sensor.ekf_update_tick;
             vofa[1] = g_shared_sensor.ekf_px_cm;
             vofa[2] = g_shared_sensor.ekf_py_cm;
@@ -294,7 +283,7 @@ void VOFA_Telemetry_Send(const VOFA_Snapshot_t *snap)
             vofa[6] = g_shared_sensor.ekf_vy_obs_cmps;
             vofa[7] = (float)g_shared_sensor.ekf_flags;
             break;
-        case 1U: /* vx1: Phase 2 — 纯平移 (OF0 + 高度 + 质量 + 姿态) */
+        case 1U: /* vx1: 阶段2 — 纯平移 (高度 + 质量 + 姿态) */
             vofa[0] = (float)g_sys_tick;
             vofa[1] = (float)g_shared_sensor.flow_dx_raw;
             vofa[2] = (float)g_shared_sensor.flow_dy_raw;
@@ -305,7 +294,7 @@ void VOFA_Telemetry_Send(const VOFA_Snapshot_t *snap)
             vofa[7] = g_shared_sensor.pitch;
             break;
         case 0U:
-        default: /* vx0: Phase 1 — IMU 静态 60s (加速度 + 角速度 + 姿态) */
+        default: /* vx0: 阶段1 — IMU 静态 60s (加速度 + 角速度 + 姿态) */
             vofa[0] = (float)g_sys_tick;
             vofa[1] = g_shared_sensor.accel_g[0];
             vofa[2] = g_shared_sensor.accel_g[1];

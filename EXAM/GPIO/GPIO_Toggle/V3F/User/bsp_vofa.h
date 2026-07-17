@@ -75,13 +75,6 @@ typedef struct {
     float flow_pos_target_x_cm;
     float flow_pos_target_y_cm;
 
-    /* ---- OF0 互补滤波速度估计 (cm/s) ---- */
-    float of0_vx_cmps;
-    float of0_vy_cmps;
-    float of0_raw_vx_cmps;
-    float of0_raw_vy_cmps;
-    float of0_height_cm;        /* OF0 当前使用的高度 (cm) */
-
     /* ---- 传感器时间戳 ---- */
     uint32_t sensor_seen_local_ms;   /* 最后一次收到传感器数据的本地时间 */
     uint32_t sensor_seen_update_tick; /* 最后一次传感器数据的 tick 号 */

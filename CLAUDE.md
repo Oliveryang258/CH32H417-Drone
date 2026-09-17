@@ -4,11 +4,11 @@ Use this file as Claude Code's project entry point. Codex skill drafts live unde
 
 ## Project Map
 
-- Root: `C:\Users\32142\Desktop\EVT`
+- Root: repository root
 - Main workspace: `EXAM/GPIO/GPIO_Toggle`
 - V3F flight controller: `EXAM/GPIO/GPIO_Toggle/V3F/User`
 - V5F sensor/link coprocessor: `EXAM/GPIO/GPIO_Toggle/V5F/User`
-- ESC firmware: `C:\Users\32142\Desktop\CH32V203C8T6_BLDC_ESC`
+- ESC firmware: separate external repository (not included in this checkout)
 
 ## Division Of Labor
 

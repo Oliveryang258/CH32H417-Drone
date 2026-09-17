@@ -57,3 +57,21 @@ Thumbs.db
 
 # Local simulation outputs
 tools/output/
+
+# Local analysis draft; publish only after authorship/provenance review
+/tools/vofa_attitude_advisor.py
+
+# Local review/export packages (not public repository content)
+/output/
+/software_copyright_package/
+/tmp/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local AI-agent coordination notes
+CODEX_HANDOFF.md
+
+# Local rollback snapshots used during debugging
+OF2_VERSION_COMPARE/

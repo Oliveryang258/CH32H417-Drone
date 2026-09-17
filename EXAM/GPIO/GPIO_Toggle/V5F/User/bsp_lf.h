@@ -46,9 +46,6 @@ extern "C" {
 /* 特殊值定义 */
 #define LF_RANGE_INVALID_CM           0xFFFFFFFFUL  // 测距无效值标识
 
-/* 特殊值定义 */
-#define LF_RANGE_INVALID_CM           0xFFFFFFFFUL  // 测距无效值标识
-
 /* ==================== 数据类型定义 ==================== */
 
 /**

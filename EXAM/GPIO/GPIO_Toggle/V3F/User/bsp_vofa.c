@@ -45,6 +45,12 @@ static uint8_t  s_tx_buf[VOFA_TX_BUF_SIZE];
 static volatile uint16_t s_tx_head = 0U;
 static volatile uint16_t s_tx_tail = 0U;
 
+/* Post-competition engineering improvement; not flight-validated. */
+static volatile uint32_t s_rx_byte_count = 0UL;
+static volatile uint32_t s_rx_overflow_count = 0UL;
+static volatile uint32_t s_tx_frame_count = 0UL;
+static volatile uint32_t s_tx_drop_count = 0UL;
+
 /* TX 环形缓冲区空闲字节数。
  * 预留 1 字节空位以区分"满"和"空"。 */
 static uint16_t VOFA_TxFree(void)
@@ -73,6 +79,7 @@ static uint8_t VOFA_QueueBytes(const uint8_t *data, uint16_t len)
 
     NVIC_DisableIRQ(USART3_IRQn);
     if(VOFA_TxFree() < len) {
+        s_tx_drop_count++;
         NVIC_EnableIRQ(USART3_IRQn);
         return 0U;
     }
@@ -82,6 +89,7 @@ static uint8_t VOFA_QueueBytes(const uint8_t *data, uint16_t len)
         s_tx_head = (uint16_t)((s_tx_head + 1U) % VOFA_TX_BUF_SIZE);
     }
     VOFA_TxKick();
+    s_tx_frame_count++;
     NVIC_EnableIRQ(USART3_IRQn);
     return 1U;
 }
@@ -126,13 +134,13 @@ uint8_t BSP_VOFA_IsConnected(void)
     return s_connected;
 }
 
-void BSP_VOFA_Send(float *data, uint8_t count)
+void BSP_VOFA_Send(const float *data, uint8_t count)
 {
     uint8_t  i;
     uint8_t  n = (count > VOFA_CHANNEL_NUM) ? VOFA_CHANNEL_NUM : count;
     uint8_t *ptr;
 
-    if (!s_connected) return;
+    if ((!s_connected) || (data == NULL)) return;
 
     for(i = 0; i < n; i++) s_packet.channels[i] = data[i];
     for(i = n; i < VOFA_CHANNEL_NUM; i++) s_packet.channels[i] = 0.0f;
@@ -141,24 +149,21 @@ void BSP_VOFA_Send(float *data, uint8_t count)
     (void)VOFA_QueueBytes(ptr, (uint16_t)sizeof(VOFA_Packet_t));
 }
 
-void BSP_VOFA_SendJustFloat(float ch1, float ch2, float ch3, float ch4)
-{
-    uint8_t *ptr;
-    if (!s_connected) return;
-    s_packet.channels[0] = ch1;
-    s_packet.channels[1] = ch2;
-    s_packet.channels[2] = ch3;
-    s_packet.channels[3] = ch4;
-    ptr = (uint8_t *)&s_packet;
-    (void)VOFA_QueueBytes(ptr, (uint16_t)sizeof(VOFA_Packet_t));
-}
-
 uint8_t VOFA_RxRead(uint8_t *out)
 {
-    if(s_rx_head == s_rx_tail) return 0U;
+    if((out == NULL) || (s_rx_head == s_rx_tail)) return 0U;
     *out = s_rx_buf[s_rx_tail];
     s_rx_tail = (s_rx_tail + 1U) % VOFA_RX_BUF_SIZE;
     return 1U;
+}
+
+void BSP_VOFA_GetDebugInfo(VOFA_DebugInfo_t *out)
+{
+    if(out == NULL) return;
+    out->rx_byte_count = s_rx_byte_count;
+    out->rx_overflow_count = s_rx_overflow_count;
+    out->tx_frame_count = s_tx_frame_count;
+    out->tx_drop_count = s_tx_drop_count;
 }
 
 void USART3_IRQHandler(void)
@@ -168,7 +173,13 @@ void USART3_IRQHandler(void)
         uint8_t data = (uint8_t)USART_ReceiveData(USART3);
         uint8_t next = (s_rx_head + 1U) % VOFA_RX_BUF_SIZE;
         s_connected = 1U;
-        if(next != s_rx_tail) { s_rx_buf[s_rx_head] = data; s_rx_head = next; }
+        s_rx_byte_count++;
+        if(next != s_rx_tail) {
+            s_rx_buf[s_rx_head] = data;
+            s_rx_head = next;
+        } else {
+            s_rx_overflow_count++;
+        }
     }
 
     if(USART_GetITStatus(USART3, USART_IT_TXE) != RESET)

@@ -19,9 +19,6 @@
  */
 #define PWM_TIM_COUNTER_CLK_HZ        1000000UL
 
-/* 电调解锁：上电后输出 1000us 低油门并阻塞等待的毫秒数。 */
-#define PWM_ARM_WAIT_MS               3000U
-
 /* 保存 4 路当前脉宽缓存值。 */
 static uint16_t s_pwm_pulse_us[PWM_MOTOR_COUNT] = {
     PWM_MIN_PULSE_US,
@@ -43,7 +40,6 @@ static uint8_t PWM_IsValidMotor(uint8_t motor);
 static void PWM_WriteChannelRaw(uint8_t motor, uint16_t pulse_us);
 static void PWM_WriteAllRaw(uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4);
 static uint8_t PWM_AllAtMinPulse(void);
-static void PWM_RampTo(uint8_t motor, uint16_t target_us, uint16_t step_us, uint16_t step_delay_ms);
 
 /*
  * PWM_Init：
@@ -326,54 +322,4 @@ static uint8_t PWM_AllAtMinPulse(void)
     }
 
     return 1U;
-}
-
-/* 按步进平滑拉升/拉降某一路脉宽。 */
-static void PWM_RampTo(uint8_t motor, uint16_t target_us, uint16_t step_us, uint16_t step_delay_ms)
-{
-    uint16_t current_us;
-    uint16_t next_us;
-    uint16_t safe_step;
-    uint16_t safe_target;
-
-    if(PWM_IsValidMotor(motor) == 0U)
-    {
-        return;
-    }
-
-    safe_target = PWM_ClampPulseUs(target_us);
-    current_us = PWM_GetPulseUs(motor);
-    safe_step = (step_us == 0U) ? 1U : step_us;
-
-    while(current_us != safe_target)
-    {
-        if(current_us < safe_target)
-        {
-            next_us = current_us + safe_step;
-            if(next_us > safe_target)
-            {
-                next_us = safe_target;
-            }
-        }
-        else
-        {
-            if(current_us > safe_step)
-            {
-                next_us = current_us - safe_step;
-            }
-            else
-            {
-                next_us = PWM_MIN_PULSE_US;
-            }
-
-            if(next_us < safe_target)
-            {
-                next_us = safe_target;
-            }
-        }
-
-        PWM_WriteChannelRaw(motor, next_us);
-        current_us = next_us;
-        Delay_Ms(step_delay_ms);
-    }
 }

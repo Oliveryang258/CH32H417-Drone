@@ -9,13 +9,6 @@
 #endif
 #define printf(...) ((void)0)
 
-// MOTOR TIM4 
-#define MOTOR_PORT             GPIOD
-#define MOTOR1_PIN             GPIO_Pin_12 // TIM4_CH1
-#define MOTOR2_PIN             GPIO_Pin_13 // TIM4_CH2
-#define MOTOR3_PIN             GPIO_Pin_14 // TIM4_CH3
-#define MOTOR4_PIN             GPIO_Pin_15 // TIM4_CH4
-
 // MEG PD4
 #define MEG_PORT               GPIOA
 #define MEG_PIN                GPIO_Pin_5
@@ -72,11 +65,6 @@
 #define LED_PORT               GPIOE
 #define LED_PIN                GPIO_Pin_11
 
-// TOF UART5 走的AF4
-#define TOF_TX_PORT            GPIOF
-#define TOF_TX                 GPIO_Pin_5
-#define TOF_RX_PORT            GPIOE
-#define TOF_RX                 GPIO_Pin_0                 
 #endif /* __BOARD_CONFIG_H */
 
 // 板间通讯

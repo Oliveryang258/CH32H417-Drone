@@ -11,8 +11,8 @@
 #include <math.h>
 
 /* ---- 调参参数（可通过 VOFA Commander 在线修改）---- */
-/* 注意：当前全部置 0 用于油门直通测试，
- *       PID 调试架后通过 VOFA Commander 的 rp/rd... 命令开启 */
+/* 当前默认值见下方定义；VOFA Commander 可在运行时修改部分参数。
+ * 参数是否对应某次飞行必须结合当次固件和试验记录确认。 */
 volatile float g_kp_roll  = 0.70f;
 volatile float g_ki_roll  = 0.0f;
 volatile float g_kd_roll  = 0.002f;
@@ -436,7 +436,6 @@ static void CMD_Poll(void)
 #define YAW_FF_START_US     THR_RC_MID_US
 #define ARM_THR_THRESHOLD   (-100)   /* 油门需低于此值才能解锁 */
 #define PID_PERIOD_US       6667U    /* PID 周期 6667us ≈ 150Hz (TIM2 ARR) */
-#define VOFA_PERIOD_MS      10U      /* VOFA 周期 10ms = 100Hz */
 #define THR_RAMP_UP_US      2.0f     /* 油门缓升：每 PID 周期最多+2us，*150=300us/s */
 #define THR_RAMP_DN_US      2.0f     /* 油门缓降：同步 300us/s。自紧螺纹桨减速过快时
                                       *   桨叶惯性会反向打松螺母，必须对称缓降。
@@ -576,7 +575,7 @@ static void PID_Timer_Init(void)
     TIM_TimeBaseInit(TIM2, &tim_base_init);
 
     TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
-    NVIC_SetPriority(TIM2_IRQn, 0x40);  /* 低于 USART1 (0x00)，高于 USART3 (0x80) */
+    NVIC_SetPriority(TIM2_IRQn, 0x40);  /* 低于 USART5 (0x00)，高于 USART3 (0x80) */
     NVIC_EnableIRQ(TIM2_IRQn);
     TIM_Cmd(TIM2, ENABLE);
 }
@@ -616,7 +615,7 @@ void PID_Tick(void)
     /*
      * [1] 角速度看门狗
      * 输入：gyro_dps[0/1/2] (deg/s)，三轴原始角速度
-     * 逻辑：任意轴 |gyro| > 500 deg/s 连续 10 tick (≈50ms) → 触发
+     * 逻辑：任意轴 |gyro| > 500 deg/s 连续 10 tick (150Hz 下约 66.7ms) → 触发
      * 输出：强制 PWM_Lock() + disarm，清空全部 PID 状态
      * 目的：检测电调失控、混控反向等致命故障，防止全油门炸机
      */

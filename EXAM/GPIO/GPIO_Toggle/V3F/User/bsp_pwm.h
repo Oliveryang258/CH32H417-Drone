@@ -39,9 +39,6 @@
 #define PWM_MIN_PULSE_US             1000U
 #define PWM_MAX_PULSE_US             2000U
 
-/* 电调解锁时强制输出最低油门并阻塞的时间（ms）。 */
-#define PWM_ARM_DELAY_MS             3000U
-
 /* 接口返回状态码。 */
 #define PWM_OK                       0U
 #define PWM_ERROR                    1U

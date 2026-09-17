@@ -15,10 +15,11 @@
 #include "bsp_lf.h"
 
 extern volatile uint32_t g_tick;
+extern void XYKF_TickISR(void);
 
 void NMI_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void HardFault_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void SysTick1_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART4_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -38,13 +39,14 @@ void NMI_Handler(void)
 }
 
 /*********************************************************************
- * @fn      SysTick_Handler
+ * @fn      SysTick1_Handler
  *
  * @brief   1ms 时基，递增 g_tick 供主循环所有超时判断使用。
  *
  * @return  none
  */
-void SysTick_Handler(void)
+/* Post-competition engineering improvement; not flight-validated. */
+void SysTick1_Handler(void)
 {
     g_tick++;
 }
@@ -68,6 +70,9 @@ void HardFault_Handler(void)
 
   printf("\r\n!! HARDFAULT  mcause=0x%08lX  mepc=0x%08lX  mtval=0x%08lX !!\r\n",
          (unsigned long)mcause, (unsigned long)mepc, (unsigned long)mtval);
+  (void)mcause;
+  (void)mepc;
+  (void)mtval;
 
   /* 让上面这串字节先慢慢从串口蹦出去（_write 是阻塞 TC，但仍要点时间） */
   for (i = 0; i < 2000000U; i++)

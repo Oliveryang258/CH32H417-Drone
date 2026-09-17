@@ -23,7 +23,7 @@ typedef struct
     float    pitch;         /* 俯仰角     (°) */
     float    yaw;           /* 偏航角     (°) */
     float    altitude;      /* 高度        (m) */
-    uint32_t update_tick;   /* 每次写入后递增，V3F 用于判断数据是否刷新 */
+    uint32_t update_tick;   /* V5F main-loop heartbeat; not a sensor commit sequence */
     float    gyro_dps[3];   /* 三轴角速度  (°/s)：[0]=roll, [1]=pitch, [2]=yaw */
 
     /* === 遥控数据（V5F 通过 NRF 收到后写入） === */
@@ -31,7 +31,7 @@ typedef struct
     int16_t  rc_pitch;      /* 俯仰摇杆 -120 ~ +120 */
     int16_t  rc_yaw;        /* 偏航摇杆 -120 ~ +120 */
     int16_t  rc_throttle;   /* 油门摇杆 -120 ~ +120 */
-    uint8_t  rc_sw;         /* 拨码：1=Wait, 2=Fly */
+    uint8_t  rc_sw;         /* mode: 0=Wait, 1=Hover, 2=Fly */
     uint8_t  rc_meg;        /* 机械爪：0=Drop, 1=Grab */
     uint8_t  rc_flags;      /* 备用标志位 */
     uint8_t  rc_link_ok;    /* 1=link ok, 0=timeout */

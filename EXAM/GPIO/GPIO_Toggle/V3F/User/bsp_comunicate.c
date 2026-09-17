@@ -9,12 +9,11 @@
  *   1. 初始化 USART5，115200bps，8N1
  *   2. 发送单字节 / 字符串
  *   3. RX 中断接收，存入环形缓冲区
- *   4. 提供上层"每隔1s发送'B'"的 tick 驱动接口
+ *   4. 记录接收字节和环形缓冲区溢出次数
  */
 
 #include "bsp_comunicate.h"
 
-#define COMM_SEND_PERIOD_MS 1000
 /* ------------------------------------------------------------------ */
 /*  IRQ Handler 前置声明（CH32H417 RISC-V 格式）                        */
 /* ------------------------------------------------------------------ */
@@ -24,12 +23,12 @@ void USART5_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 /*  内部环形接收缓冲区                                                  */
 /* ------------------------------------------------------------------ */
 static uint8_t  s_rx_buf[COMM_RX_BUF_SIZE];
-static uint8_t  s_rx_head = 0U;   /* 写入位置（中断写） */
-static uint8_t  s_rx_tail = 0U;   /* 读取位置（主循环读） */
+static volatile uint8_t  s_rx_head = 0U;   /* 写入位置（中断写） */
+static volatile uint8_t  s_rx_tail = 0U;   /* 读取位置（主循环读） */
 
-/* 定时发送计数 */
-static volatile uint32_t s_tick_ms     = 0U;
-static uint32_t          s_last_send_ms = 0U;
+/* Post-competition engineering improvement; not flight-validated. */
+static volatile uint32_t s_rx_byte_count = 0UL;
+static volatile uint32_t s_rx_overflow_count = 0UL;
 
 /* ------------------------------------------------------------------ */
 /*  USART5 初始化                                                       */
@@ -112,7 +111,7 @@ uint8_t COMM_RxAvailable(void)
 /* 从环形缓冲区读取一字节，返回 1 表示成功，0 表示缓冲区空 */
 uint8_t COMM_RxRead(uint8_t *out)
 {
-    if(s_rx_head == s_rx_tail)
+    if((out == NULL) || (s_rx_head == s_rx_tail))
     {
         return 0U;  /* 缓冲区空 */
     }
@@ -129,23 +128,11 @@ void COMM_RxFlush(void)
     s_rx_tail = 0U;
 }
 
-/* ------------------------------------------------------------------ */
-/*  定时发送驱动                                                        */
-/* ------------------------------------------------------------------ */
-
-/*
- * COMM_Tick：每 1ms 调用一次（放在 SysTick_Handler 或主循环固定计时器里）。
- * 内部以 COMM_SEND_PERIOD_MS（1000ms）为周期，自动向副芯片发送字符 'B'。
- */
-void COMM_Tick(void)
+void COMM_GetDebugInfo(COMM_DebugInfo_t *out)
 {
-    s_tick_ms++;
-
-    if((s_tick_ms - s_last_send_ms) >= COMM_SEND_PERIOD_MS)
-    {
-        s_last_send_ms = s_tick_ms;
-        COMM_SendByte('B');
-    }
+    if(out == NULL) return;
+    out->rx_byte_count = s_rx_byte_count;
+    out->rx_overflow_count = s_rx_overflow_count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,6 +145,7 @@ void USART5_IRQHandler(void)
     if(USART_GetITStatus(USART5, USART_IT_RXNE) != RESET)
     {
         uint8_t data = (uint8_t)USART_ReceiveData(USART5);
+        s_rx_byte_count++;
 
         next_head = (s_rx_head + 1U) % COMM_RX_BUF_SIZE;
 
@@ -166,6 +154,10 @@ void USART5_IRQHandler(void)
             s_rx_buf[s_rx_head] = data;
             s_rx_head = next_head;
         }
-        /* 缓冲区满则丢弃该字节，防止覆盖未读数据 */
+        else
+        {
+            /* 缓冲区满则丢弃该字节，防止覆盖未读数据。 */
+            s_rx_overflow_count++;
+        }
     }
 }

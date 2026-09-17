@@ -12,8 +12,8 @@
  *   PA14 -> USART3_RX (AF4) <- HC-04 蓝牙模块 TX
  *
  * VOFA+ JustFloat 协议帧格式：
- *   [float ch1][float ch2][float ch3][float ch4][0x00 0x00 0x80 0x7F]
- *   共 4×4 + 4 = 20 字节，小端序（CH32H417 原生支持）
+ *   [float ch1]...[float ch8][0x00 0x00 0x80 0x7F]
+ *   共 8×4 + 4 = 36 字节，小端序（CH32H417 原生支持）
  */
 
 /* 发送通道数 */
@@ -83,14 +83,23 @@ typedef struct {
     uint8_t flow_ok_debug;      /* 光流可用标志（调试用副本） */
 } VOFA_Snapshot_t;
 
+typedef struct {
+    uint32_t rx_byte_count;
+    uint32_t rx_overflow_count;
+    uint32_t tx_frame_count;
+    uint32_t tx_drop_count;
+} VOFA_DebugInfo_t;
+
 
 /* -------------------- 公共 API -------------------- */
 
 void BSP_VOFA_Init(uint32_t baudrate);
-void BSP_VOFA_Send(float *data, uint8_t count);
-void BSP_VOFA_SendJustFloat(float ch1, float ch2, float ch3, float ch4);
+void BSP_VOFA_Send(const float *data, uint8_t count);
 uint8_t BSP_VOFA_IsConnected(void);
 uint8_t VOFA_RxRead(uint8_t *out);
+
+/* Post-competition engineering improvement; not flight-validated. */
+void BSP_VOFA_GetDebugInfo(VOFA_DebugInfo_t *out);
 
 /*
  * VOFA_Telemetry_Send — 遥测分发主函数

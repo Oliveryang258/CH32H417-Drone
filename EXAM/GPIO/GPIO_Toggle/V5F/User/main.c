@@ -2,7 +2,7 @@
  * V5F 新板硬件 bring-up 测试 main
  *
  * 目的：在新焊接好的板子上验证以下三个模块是否正常：
- *   1) JY61P  陀螺仪（USART1）
+ *   1) JY61P  陀螺仪（USART4）
  *   2) 匿名光流 LF（USART2）
  *   3) NRF24L01+（SPI3）
  *
@@ -24,6 +24,11 @@
 #include <math.h>
 
 #define BRINGUP_PRINT_PERIOD_MS   1000U
+#define TIMEBASE_RATE_HZ          1000UL
+#define SYSTICK_CTLR_ENABLE       (1UL << 0)
+#define SYSTICK_CTLR_INTERRUPT    (1UL << 1)
+#define SYSTICK_CTLR_HCLK         (1UL << 2)
+#define SYSTICK_CTLR_AUTO_RELOAD  (1UL << 3)
 #define IMU_ROLL_LEVEL_OFFSET_DEG    0.384f
 #define IMU_PITCH_LEVEL_OFFSET_DEG (-0.157f)
 #define XYKF_RATE_HZ                200U
@@ -151,6 +156,25 @@ static uint32_t s_last_rc_tick  = 0UL;    /* 上一次成功收到 RC 包的 tic
 static uint8_t  s_link_ready    = 0U;     /* NRF 配置成功标志 */
 static uint32_t tick_global     = 0UL;    /* 主循环 tick 暴露给链路状态机 */
 volatile uint32_t g_tick        = 0UL;    /* SysTick ISR 递增，1ms 时基 */
+
+/*
+ * Post-competition engineering improvement; not flight-validated.
+ * V5F 启动向量使用 SysTick1_Handler，SDK 未提供 Cortex 风格的 SysTick_Config。
+ */
+static void Timebase_Init(void)
+{
+    uint32_t ticks_per_ms = HCLKClock / TIMEBASE_RATE_HZ;
+
+    SysTick1->CTLR = 0UL;
+    SysTick1->CNT = 0UL;
+    SysTick1->CMP = ticks_per_ms - 1UL;
+    NVIC_SetPriority(SysTick1_IRQn, 0x80);
+    NVIC_EnableIRQ(SysTick1_IRQn);
+    SysTick1->CTLR = SYSTICK_CTLR_HCLK |
+                     SYSTICK_CTLR_AUTO_RELOAD |
+                     SYSTICK_CTLR_INTERRUPT |
+                     SYSTICK_CTLR_ENABLE;
+}
 
 typedef struct
 {
@@ -934,6 +958,12 @@ static void Bringup_Run(void)
     XYKF_Init();
     XYKF_TimerInit();
 
+    /*
+     * 所有会调用 WCH Delay_Ms/Delay_Us 的启动初始化完成后再占用 SysTick1，
+     * 避免 blocking delay 重新配置并关闭 1ms timebase。
+     */
+    Timebase_Init();
+
     printf("==== Bringup loop start ====\r\n");
 
     /*
@@ -946,10 +976,12 @@ static void Bringup_Run(void)
      * 主循环职责（按执行顺序）：
      *
      * [1] update_tick 心跳
-     *     每个主循环迭代 +1，供 V3F 和 VOFA 判断数据新鲜度。
+     *     每个主循环迭代 +1；它表示 V5F main loop 在运行，
+     *     不是任何一类传感器帧的提交序号。
      *
      * [2] IMU 姿态/陀螺/加速度 → 共享内存
-     *     JY61P 通过 USART2 以 100Hz 推送。IMU_DataReady() 检测新帧，
+     *     JY61P 通过 USART4 推送；源码未配置输出频率，依赖模块持久配置。
+     *     IMU_DataReady() 检测新帧，
      *     读取后做 level-offset 校准（roll/pitch 减去静态安装偏置），
      *     写入 g_shared_sensor.roll/pitch/yaw/gyro_dps[3]/accel_g[3]。
      *
@@ -978,10 +1010,10 @@ static void Bringup_Run(void)
      *     同时维护 lf_range_distance_cm（高度估计用）。
      *
      * [6] NRF RC 链路轮询
-     *     Bringup_LinkPollRC() 检查 NRF RX FIFO，收到遥控器包后：
-     *       解析摇杆通道 ch[0..5]（T/A/E/R/AUX1/AUX2）
-     *       解析拨码开关 sw[0..1]（飞行模式 / 定高开关）
-     *       写入 g_shared_sensor.rc_ch[] / rc_sw[] / rc_flags
+     *     Bringup_LinkPollRC() 检查 NRF RX FIFO，收到 16-byte 固定包后：
+     *       校验 magic 和前 15 byte XOR checksum
+     *       解析 roll/pitch/yaw/throttle、sw_status、meg_status
+     *       写入命名 rc_* 字段、rc_sw、rc_meg、rc_flags
      *       刷新 rc_link_ok 和最后收包时间戳
      *
      * [7] 50Hz ACK Payload 刷新
@@ -997,8 +1029,8 @@ static void Bringup_Run(void)
      * [9] MEG LED 控制
      *     rc_link_ok && rc_meg 时驱动 MEG LED 指示链路状态。
      *
-     * [10] SysTick 1ms 时基
-     *     g_tick 由 SysTick ISR 硬件递增，主循环自由轮询，不阻塞。
+     * [10] SysTick1 1ms 时基
+     *     g_tick 由 SysTick1 ISR 硬件递增，主循环自由轮询，不阻塞。
      *     关键数据（IMU/光流）各自由独立帧到达驱动，不依赖循环速率。
      * =========================================================================
      */
@@ -1149,9 +1181,6 @@ int main(void)
 {
     SystemAndCoreClockUpdate();
     Delay_Init();
-
-    /* SysTick 1ms 时基：g_tick 在 ISR 中硬件递增，主循环自由轮询 */
-    SysTick_Config(SystemCoreClock / 1000UL);
 
     /* 复位源诊断：哪个复位标志置位了，说明上次是因何复位 */
     printf("[RST] PIN=%u POR=%u SFT=%u IWDG=%u WWDG=%u\r\n",
